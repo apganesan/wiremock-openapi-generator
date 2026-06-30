@@ -1,0 +1,37 @@
+# Maven
+target/
+*.releaseBackup
+*.versionsBackup
+release.properties
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+
+# IDE – IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# IDE – VS Code
+.vscode/
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+
+# Logs
+*.log
+logs/
+
+# Generated stubs (keep directory with placeholder)
+wiremock/mappings/*.json
+!wiremock/mappings/.gitkeep
+wiremock/__files/*
+!wiremock/__files/.gitkeep
