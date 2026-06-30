@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-OPENAPI_FILE="src/main/resources/sample-openapi.yaml"
+OPENAPI_FILE="src/main/resources/openapi.yaml"
 MAPPINGS_DIR="wiremock/mappings"
 JAR="target/wiremock-openapi-generator-1.0.0-jar-with-dependencies.jar"
 

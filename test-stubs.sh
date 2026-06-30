@@ -26,50 +26,49 @@ check() {
     fi
 }
 
-# ── Test 1 – GET /api/users ────────────────────────
+# ── Test 1 – POST /med (first example: ibuprofen) ──
 echo ""
-echo "▶ Testing GET /api/users"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HOST/api/users")
-check "GET /api/users" "$STATUS" 200
+echo "▶ Testing POST /med"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$HOST/med" \
+    -H "Content-Type: application/json" \
+    -d '{"id":1,"name":"Ibuprofen","type":"analgesic"}')
+check "POST /med" "$STATUS" 200
 
 echo "  Response body (truncated):"
-curl -s "$HOST/api/users" | head -c 300
+curl -s -X POST "$HOST/med" -H "Content-Type: application/json" \
+    -d '{"id":1,"name":"Ibuprofen","type":"analgesic"}' | head -c 300
 echo ""
 
-# ── Test 2 – GET /api/users/{id} ──────────────────
+# ── Test 2 – GET /med/{id} (first example: ibuprofen) ──
 echo ""
-echo "▶ Testing GET /api/users/1"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HOST/api/users/1")
-check "GET /api/users/1" "$STATUS" 200
+echo "▶ Testing GET /med/1"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HOST/med/1")
+check "GET /med/1" "$STATUS" 200
 
-curl -s "$HOST/api/users/1" | head -c 300
+echo "  Response body (truncated):"
+curl -s "$HOST/med/1" | head -c 300
 echo ""
 
-# ── Test 3 – POST /api/users ──────────────────────
+# ── Test 3 – Runtime override for GET /med/999 ────
 echo ""
-echo "▶ Testing POST /api/users"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$HOST/api/users" \
-    -H "Content-Type: application/json" \
-    -d '{"name":"Test User","email":"test@example.com"}')
-check "POST /api/users" "$STATUS" 201
-
-# ── Test 4 – Runtime override for /api/users/999 ──
-echo ""
-echo "▶ Creating runtime override for GET /api/users/999"
+echo "▶ Creating runtime override for GET /med/999"
 OVERRIDE_BODY='{
   "request": {
     "method": "GET",
-    "urlPath": "/api/users/999"
+    "urlPath": "/med/999"
   },
   "response": {
     "status": 200,
     "headers": {"Content-Type": "application/json"},
     "jsonBody": {
       "id": 999,
-      "name": "Runtime Override User",
-      "email": "override@example.com",
-      "role": "admin",
-      "status": "active"
+      "name": "Override Drug",
+      "type": "experimental",
+      "properties": {
+        "dosage": "10mg",
+        "route": "intravenous",
+        "frequency": "once daily"
+      }
     }
   },
   "priority": 1
@@ -79,17 +78,17 @@ OV_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$HOST/__admin/mappin
     -d "$OVERRIDE_BODY")
 check "POST /__admin/mappings (override)" "$OV_STATUS" 201
 
-# ── Test 5 – Verify override ──────────────────────
+# ── Test 4 – Verify override ──────────────────────
 echo ""
-echo "▶ Testing overridden GET /api/users/999"
-STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HOST/api/users/999")
-check "GET /api/users/999 (runtime override)" "$STATUS" 200
+echo "▶ Testing overridden GET /med/999"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HOST/med/999")
+check "GET /med/999 (runtime override)" "$STATUS" 200
 
-OVERRIDE_RESPONSE=$(curl -s "$HOST/api/users/999")
+OVERRIDE_RESPONSE=$(curl -s "$HOST/med/999")
 echo "  Response: $OVERRIDE_RESPONSE" | head -c 300
 echo ""
 
-# ── Test 6 – Admin API stats ──────────────────────
+# ── Test 5 – Admin API stats ──────────────────────
 echo ""
 echo "▶ Checking Admin API stats"
 STATS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HOST/__admin/mappings")
