@@ -308,7 +308,7 @@ public class EnhancedRuntimeStubManager {
      * @param jsonPath  dot-separated path
      * @param newValue  new value to set at the leaf
      */
-    void updateJsonPath(ObjectNode root, String jsonPath, Object newValue) {
+    private void updateJsonPath(ObjectNode root, String jsonPath, Object newValue) {
         String[] parts = jsonPath.split("\\.");
         ObjectNode current = root;
 
