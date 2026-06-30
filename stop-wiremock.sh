@@ -12,7 +12,7 @@ echo "  Stopping WireMock Mock Server"
 echo "═══════════════════════════════════════════════"
 echo ""
 
-docker-compose down --remove-orphans
+docker compose down --remove-orphans
 
 echo ""
 echo "✅  WireMock stopped."

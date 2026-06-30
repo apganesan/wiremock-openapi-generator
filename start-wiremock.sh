@@ -32,12 +32,12 @@ fi
 # ── Stop any existing containers ───────────────────
 echo ""
 echo "▶ Stopping any existing WireMock containers..."
-docker-compose down --remove-orphans 2>/dev/null || true
+docker compose down --remove-orphans 2>/dev/null || true
 
 # ── Start docker-compose ───────────────────────────
 echo ""
 echo "▶ Starting WireMock (port $WIREMOCK_PORT) ..."
-docker-compose up -d
+docker compose up -d
 
 # ── Wait for health check ──────────────────────────
 echo ""
@@ -57,7 +57,7 @@ echo ""
 STATUS=$(docker inspect --format='{{.State.Health.Status}}' wiremock-mock-server 2>/dev/null || echo "unknown")
 if [ "$STATUS" != "healthy" ]; then
     echo "❌  WireMock did not become healthy within ${MAX_WAIT}s (status=$STATUS)."
-    echo "    Check logs with: docker-compose logs wiremock"
+    echo "    Check logs with: docker compose logs wiremock"
     exit 1
 fi
 

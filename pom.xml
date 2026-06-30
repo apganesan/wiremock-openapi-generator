@@ -90,7 +90,7 @@
                     </descriptorRefs>
                     <archive>
                         <manifest>
-                            <mainClass>com.example.mockgen.MockServerWorkflow</mainClass>
+                            <mainClass>com.agfa.orbis.common.mockengine.MockServerWorkflow</mainClass>
                         </manifest>
                     </archive>
                 </configuration>

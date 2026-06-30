@@ -1,4 +1,4 @@
-package com.example.mockgen;
+package com.agfa.orbis.common.mockengine;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -150,7 +150,7 @@ public class OpenApiToWireMockGenerator {
         Content content = successfulResponse.getContent();
         if (content == null || !content.containsKey(APPLICATION_JSON)) {
             generateStub(method, urlPathPattern, pathPattern, operationId,
-                    "default", null, statusCode, outputPath);
+                    "default", null, statusCode, outputPath, Collections.emptyList(), 0);
             return 1;
         }
 
@@ -162,17 +162,18 @@ public class OpenApiToWireMockGenerator {
             // No named examples — try inline example
             Object inlineExample = mediaType.getExample();
             generateStub(method, urlPathPattern, pathPattern, operationId,
-                    "default", inlineExample, statusCode, outputPath);
+                    "default", inlineExample, statusCode, outputPath, Collections.emptyList(), 0);
             return 1;
         }
 
         // One stub file per named example
+        List<String> exampleNames = new ArrayList<>(examples.keySet());
         int count = 0;
-        for (Map.Entry<String, io.swagger.v3.oas.models.examples.Example> exEntry : examples.entrySet()) {
-            String exampleName = exEntry.getKey();
-            Object exampleValue = exEntry.getValue().getValue();
+        for (int i = 0; i < exampleNames.size(); i++) {
+            String exampleName = exampleNames.get(i);
+            Object exampleValue = examples.get(exampleName).getValue();
             generateStub(method, urlPathPattern, pathPattern, operationId,
-                    exampleName, exampleValue, statusCode, outputPath);
+                    exampleName, exampleValue, statusCode, outputPath, exampleNames, i);
             count++;
         }
         return count;
@@ -183,7 +184,8 @@ public class OpenApiToWireMockGenerator {
      */
     private void generateStub(String method, String urlPathPattern, String originalPath,
                                String operationId, String exampleName, Object responseBody,
-                               int statusCode, Path outputPath) {
+                               int statusCode, Path outputPath,
+                               List<String> allExampleNames, int exampleIndex) {
         try {
             ObjectNode stub = objectMapper.createObjectNode();
 
@@ -210,9 +212,17 @@ public class OpenApiToWireMockGenerator {
             response.set("headers", headers);
             stub.set("response", response);
 
-            // ---- Scenario (enables switching between examples) ----
-            stub.put("scenarioName", operationId);
-            stub.put("requiredScenarioState", exampleName);
+            // ---- Scenario (enables cycling through examples on repeated requests) ----
+            // Only add scenario when there are multiple examples for this operation.
+            if (allExampleNames.size() > 1) {
+                boolean isFirst = exampleIndex == 0;
+                boolean isLast  = exampleIndex == allExampleNames.size() - 1;
+                String requiredState = isFirst ? "Started" : allExampleNames.get(exampleIndex - 1);
+                String newState      = isLast  ? "Started" : allExampleNames.get(exampleIndex);
+                stub.put("scenarioName", operationId);
+                stub.put("requiredScenarioState", requiredState);
+                stub.put("newScenarioState", newState);
+            }
             stub.put("priority", DEFAULT_STUB_PRIORITY);
 
             // ---- Metadata ----

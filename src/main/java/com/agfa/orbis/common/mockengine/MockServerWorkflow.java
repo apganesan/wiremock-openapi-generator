@@ -1,4 +1,4 @@
-package com.example.mockgen;
+package com.agfa.orbis.common.mockengine;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;

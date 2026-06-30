@@ -1,4 +1,4 @@
-package com.example.mockgen;
+package com.agfa.orbis.common.mockengine;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;

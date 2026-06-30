@@ -1,4 +1,4 @@
-package com.example.mockgen;
+package com.agfa.orbis.common.mockengine;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
