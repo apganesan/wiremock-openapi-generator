@@ -1,6 +1,6 @@
 package com.agfa.orbis.common.mockengine.impl;
-import com.agfa.orbis.common.mockengine.api.*;
 
+import com.agfa.orbis.common.mockengine.api.StubClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -16,215 +16,189 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 /**
- * {@link StubClient} implementation that talks to the WireMock Admin REST API.
+ * {@link StubClient} implementation backed by the WireMock Admin REST API.
  *
- * <p>All override/patch stubs receive {@code priority = 1} so they always win over
- * the generated stubs ({@code priority = 5}).
- *
- * <p>The key design point is {@link #patchProperties}: it reads the existing stub (which
- * carries the full OpenAPI example body), applies only the supplied property changes, and
- * re-registers the stub — so untouched fields keep their spec-generated values.
+ * <p>Override stubs use {@code priority=1} so they always win over
+ * generated stubs ({@code priority=5}).
  */
 public class WireMockAdminClient implements StubClient {
 
-    private static final Logger log = LoggerFactory.getLogger(WireMockAdminClient.class);
+    private static final Logger LOG = LoggerFactory.getLogger(WireMockAdminClient.class);
 
-    private static final int    OVERRIDE_PRIORITY  = 1;
-    private static final String CONTENT_TYPE_JSON  = "application/json";
+    private static final int    OVERRIDE_PRIORITY = 1;
+    private static final String JSON_CONTENT_TYPE = "application/json";
 
-    private final String adminUrl;
+    private final String       adminUrl;
     private final ObjectMapper mapper;
 
     public WireMockAdminClient(String host, int port) {
         this.adminUrl = "http://" + host + ":" + port + "/__admin";
         this.mapper   = new ObjectMapper();
-        log.debug("WireMockAdminClient connected to {}", adminUrl);
+        LOG.debug("WireMockAdminClient -> {}", adminUrl);
     }
 
-    // -------------------------------------------------------------------------
-    // StubClient — query
-    // -------------------------------------------------------------------------
+    // ── find stub ──────────────────────────────────────────────────────────────
 
     @Override
     public JsonNode findStub(String method, String urlPattern) throws IOException {
         JsonNode all = mapper.readTree(httpGet(adminUrl + "/mappings"));
-        for (JsonNode mapping : all.path("mappings")) {
-            JsonNode req   = mapping.path("request");
-            String   meth  = req.path("method").asText();
-            String   url   = req.has("urlPath")
-                    ? req.path("urlPath").asText()
-                    : req.path("urlPathPattern").asText();
-            if (method.equalsIgnoreCase(meth) && urlPattern.equals(url)) {
-                return mapping;
-            }
+        for (JsonNode m : all.path("mappings")) {
+            if (matchesRequest(m, method, urlPattern)) return m;
         }
         return null;
     }
 
-    // -------------------------------------------------------------------------
-    // StubClient — full override
-    // -------------------------------------------------------------------------
-
-    @Override
-    public String override(String method, String urlPattern, Object responseBody)
-            throws IOException {
-        log.info("Overriding stub: {} {}", method, urlPattern);
-
-        ObjectNode stub = buildStub(method, urlPattern, responseBody, 200);
-        stub.put("priority", OVERRIDE_PRIORITY);
-
-        JsonNode response = mapper.readTree(httpPost(adminUrl + "/mappings", stub.toString()));
-        String id = response.path("id").asText();
-        log.info("  ✅  Override registered — id={}", id);
-        return id;
-    }
-
-    // -------------------------------------------------------------------------
-    // StubClient — partial property patch (KEY fix: preserves OpenAPI values)
-    // -------------------------------------------------------------------------
+    // ── single unified override ────────────────────────────────────────────────
 
     /**
-     * Reads the existing stub, merges only {@code properties} into its {@code jsonBody},
-     * and re-registers with priority 1.
-     *
-     * <p>Fields not listed in {@code properties} are unchanged — they keep the values
-     * that were generated from the OpenAPI spec example.
+     * Core override logic — one method for all cases:
+     * <ul>
+     *   <li>{@code exampleIndex != null} → use that example from {@code metadata.examples}</li>
+     *   <li>{@code exampleIndex == null} → use whatever the server is currently serving</li>
+     *   <li>{@code patches} (possibly empty) applied on top of the base body</li>
+     * </ul>
      */
     @Override
-    public void patchProperties(String method, String urlPattern,
-                                Map<String, Object> properties) throws IOException {
-        log.info("Patching {} properties on stub {} {}", properties.size(), method, urlPattern);
+    public void applyOverride(String method, String urlPattern,
+                              Integer exampleIndex, Map<String, Object> patches) throws IOException {
+        LOG.info("applyOverride {} {} — exampleIndex={}, patches={}", method, urlPattern, exampleIndex, patches.keySet());
 
-        JsonNode existing = findStub(method, urlPattern);
-        if (existing == null) {
-            throw new IllegalStateException(
-                    "No stub found for " + method + " " + urlPattern);
+        ObjectNode baseBody;
+
+        if (exampleIndex != null) {
+            // Read from the generated stub's metadata.examples (never the active override)
+            JsonNode generated = findGeneratedStub(method, urlPattern);
+            if (generated == null) {
+                throw new IllegalStateException("No generated stub found for " + method + " " + urlPattern);
+            }
+            JsonNode examples = generated.path("metadata").path("examples");
+            if (exampleIndex < 0 || exampleIndex >= examples.size()) {
+                throw new IndexOutOfBoundsException(
+                        "Index " + exampleIndex + " out of bounds (found " + examples.size() + " examples)");
+            }
+            JsonNode exBody = examples.get(exampleIndex).path("body");
+            String   name   = examples.get(exampleIndex).path("name").asText();
+            LOG.info("  Base: example[{}] '{}'", exampleIndex, name);
+            baseBody = (ObjectNode) mapper.readTree(exBody.toString());
+        } else {
+            // Patch on top of whatever WireMock is currently serving
+            JsonNode active = findActiveStub(method, urlPattern);
+            if (active == null) {
+                throw new IllegalStateException("No stub found for " + method + " " + urlPattern);
+            }
+            JsonNode jsonBody = active.path("response").path("jsonBody");
+            if (jsonBody.isMissingNode()) {
+                throw new IllegalStateException("Active stub has no jsonBody for " + method + " " + urlPattern);
+            }
+            LOG.info("  Base: currently active stub (priority={})", active.path("priority").asInt());
+            baseBody = (ObjectNode) mapper.readTree(jsonBody.toString());
         }
 
-        // Deep-copy so we don't mutate the original
-        ObjectNode stub = (ObjectNode) mapper.readTree(existing.toString());
-
-        JsonNode jsonBody = stub.path("response").path("jsonBody");
-        if (jsonBody.isMissingNode()) {
-            throw new IllegalStateException("Stub has no jsonBody — cannot patch properties.");
+        // Apply patches (may be empty — that's fine, pure example selection)
+        for (Map.Entry<String, Object> e : patches.entrySet()) {
+            setAtPath(baseBody, e.getKey(), e.getValue());
         }
 
-        // Apply each property change; remaining fields are untouched
-        for (Map.Entry<String, Object> entry : properties.entrySet()) {
-            setAtPath((ObjectNode) jsonBody, entry.getKey(), entry.getValue());
-        }
-
-        stub.put("priority", OVERRIDE_PRIORITY);
-        httpPost(adminUrl + "/mappings", stub.toString());
-        log.info("  ✅  Properties patched: {}", properties.keySet());
+        postOverride(method, urlPattern, baseBody);
+        LOG.info("  ✅  Override applied.");
     }
 
-    // -------------------------------------------------------------------------
-    // StubClient — array operations
-    // -------------------------------------------------------------------------
+    // ── array operations ───────────────────────────────────────────────────────
 
     @Override
-    public void patchArrayItem(String method, String urlPattern, int index,
-                               Map<String, Object> updates) throws IOException {
-        log.info("Patching array item [{}] for {} {}", index, method, urlPattern);
-
-        ObjectNode stub = requireStubCopy(method, urlPattern);
-        ArrayNode array = requireArray(stub, method, urlPattern);
+    public void patchArrayItem(String method, String urlPattern,
+                               int index, Map<String, Object> updates) throws IOException {
+        LOG.info("patchArrayItem[{}] {} {}", index, method, urlPattern);
+        ObjectNode stub  = requireActiveCopy(method, urlPattern);
+        ArrayNode  array = requireArray(stub, method, urlPattern);
         requireInBounds(array, index);
-
         ObjectNode item = (ObjectNode) array.get(index);
         updates.forEach((k, v) -> item.set(k, mapper.valueToTree(v)));
-
         stub.put("priority", OVERRIDE_PRIORITY);
         httpPost(adminUrl + "/mappings", stub.toString());
-        log.info("  ✅  Array item [{}] patched.", index);
+        LOG.info("  ✅  Array item [{}] patched.", index);
     }
 
     @Override
     public void addArrayItem(String method, String urlPattern, Object item) throws IOException {
-        log.info("Adding item to array for {} {}", method, urlPattern);
-
-        ObjectNode stub  = requireStubCopy(method, urlPattern);
+        LOG.info("addArrayItem {} {}", method, urlPattern);
+        ObjectNode stub  = requireActiveCopy(method, urlPattern);
         ArrayNode  array = requireArray(stub, method, urlPattern);
         array.add(mapper.valueToTree(item));
-
         stub.put("priority", OVERRIDE_PRIORITY);
         httpPost(adminUrl + "/mappings", stub.toString());
-        log.info("  ✅  Item appended (new size={}).", array.size());
+        LOG.info("  ✅  Item appended (size={}).", array.size());
     }
 
     @Override
     public void removeArrayItem(String method, String urlPattern, int index) throws IOException {
-        log.info("Removing array item [{}] from {} {}", index, method, urlPattern);
-
-        ObjectNode stub  = requireStubCopy(method, urlPattern);
+        LOG.info("removeArrayItem[{}] {} {}", index, method, urlPattern);
+        ObjectNode stub  = requireActiveCopy(method, urlPattern);
         ArrayNode  array = requireArray(stub, method, urlPattern);
         requireInBounds(array, index);
         array.remove(index);
-
         stub.put("priority", OVERRIDE_PRIORITY);
         httpPost(adminUrl + "/mappings", stub.toString());
-        log.info("  ✅  Array item [{}] removed (new size={}).", index, array.size());
+        LOG.info("  ✅  Array item [{}] removed (size={}).", index, array.size());
     }
 
-    // -------------------------------------------------------------------------
-    // StubClient — scenario + reset
-    // -------------------------------------------------------------------------
-
-    @Override
-    public void switchScenario(String scenarioName, String state) throws IOException {
-        log.info("Switching scenario '{}' → '{}'", scenarioName, state);
-        ObjectNode body = mapper.createObjectNode();
-        body.put("state", state);
-        httpPut(adminUrl + "/scenarios/" + scenarioName + "/state", body.toString());
-        log.info("  ✅  Scenario '{}' is now '{}'.", scenarioName, state);
-    }
-
-    @Override
-    public void registerSequence(String scenarioName, String method, String urlPattern,
-                                 java.util.List<?> responses) throws IOException {
-        if (responses == null || responses.isEmpty()) {
-            throw new IllegalArgumentException("responses list must not be empty");
-        }
-        log.info("Registering sequence '{}' ({} responses) for {} {}",
-                scenarioName, responses.size(), method, urlPattern);
-
-        int last = responses.size() - 1;
-        for (int i = 0; i <= last; i++) {
-            String requiredState = (i == 0)    ? "Started"     : "state-" + i;
-            String newState      = (i == last)  ? "Started"     : "state-" + (i + 1);
-
-            ObjectNode stub = buildStub(method, urlPattern, responses.get(i), 200);
-            stub.put("scenarioName",          scenarioName);
-            stub.put("requiredScenarioState", requiredState);
-            stub.put("newScenarioState",      newState);
-            stub.put("priority",              OVERRIDE_PRIORITY);
-
-            httpPost(adminUrl + "/mappings", stub.toString());
-        }
-        log.info("  ✅  Sequence '{}' registered ({} steps).", scenarioName, responses.size());
-    }
+    // ── reset ──────────────────────────────────────────────────────────────────
 
     @Override
     public void reset() throws IOException {
-        log.info("Resetting all stubs to generated state ...");
+        LOG.info("Resetting stubs to generated state …");
         httpPost(adminUrl + "/mappings/reset", "");
-        log.info("  ✅  Stubs reset.");
+        LOG.info("  ✅  Stubs reset.");
     }
 
-    // -------------------------------------------------------------------------
-    // Private helpers
-    // -------------------------------------------------------------------------
+    // ── private helpers ────────────────────────────────────────────────────────
+
+    /** Post a priority-1 override stub with the given body. */
+    private void postOverride(String method, String urlPattern, ObjectNode body) throws IOException {
+        ObjectNode stub     = buildStub(method, urlPattern, body, 200);
+        stub.put("priority", OVERRIDE_PRIORITY);
+        mapper.readTree(httpPost(adminUrl + "/mappings", stub.toString()));
+    }
 
     /**
-     * Navigate a dot-separated JSON path and set the leaf value, creating intermediate
-     * nodes as needed.  Example: path {@code "address.city"} sets {@code city} inside
-     * the nested {@code address} object.
+     * Original generated stub (has {@code metadata.examples}).
+     * Always priority-5; never mutated by runtime overrides.
      */
+    private JsonNode findGeneratedStub(String method, String urlPattern) throws IOException {
+        JsonNode all = mapper.readTree(httpGet(adminUrl + "/mappings"));
+        for (JsonNode m : all.path("mappings")) {
+            if (!matchesRequest(m, method, urlPattern)) continue;
+            if (!m.path("metadata").path("examples").isMissingNode()) return m;
+        }
+        return null;
+    }
+
+    /** Stub with the lowest priority number = what WireMock is actually serving right now. */
+    private JsonNode findActiveStub(String method, String urlPattern) throws IOException {
+        JsonNode all = mapper.readTree(httpGet(adminUrl + "/mappings"));
+        JsonNode active      = null;
+        int      bestPriority = Integer.MAX_VALUE;
+        for (JsonNode m : all.path("mappings")) {
+            if (!matchesRequest(m, method, urlPattern)) continue;
+            int p = m.path("priority").asInt(Integer.MAX_VALUE);
+            if (p < bestPriority) { bestPriority = p; active = m; }
+        }
+        return active;
+    }
+
+    private boolean matchesRequest(JsonNode mapping, String method, String urlPattern) {
+        JsonNode req  = mapping.path("request");
+        String   meth = req.path("method").asText();
+        String   url  = req.has("urlPath")
+                ? req.path("urlPath").asText()
+                : req.path("urlPathPattern").asText();
+        return method.equalsIgnoreCase(meth) && urlPattern.equals(url);
+    }
+
+    /** Navigate dot-path and set leaf value, creating intermediate objects as needed. */
     private void setAtPath(ObjectNode root, String dotPath, Object value) {
         String[]   parts   = dotPath.split("\\.");
         ObjectNode current = root;
-
         for (int i = 0; i < parts.length - 1; i++) {
             JsonNode next = current.get(parts[i]);
             if (next == null || !next.isObject()) {
@@ -238,8 +212,7 @@ public class WireMockAdminClient implements StubClient {
         current.set(parts[parts.length - 1], mapper.valueToTree(value));
     }
 
-    private ObjectNode buildStub(String method, String urlPattern,
-                                  Object body, int statusCode) {
+    private ObjectNode buildStub(String method, String urlPattern, Object body, int status) {
         ObjectNode stub    = mapper.createObjectNode();
         ObjectNode request = mapper.createObjectNode();
         request.put("method", method.toUpperCase());
@@ -248,44 +221,34 @@ public class WireMockAdminClient implements StubClient {
         stub.set("request", request);
 
         ObjectNode response = mapper.createObjectNode();
-        response.put("status", statusCode);
+        response.put("status", status);
         ObjectNode headers  = mapper.createObjectNode();
-        headers.put("Content-Type", CONTENT_TYPE_JSON);
+        headers.put("Content-Type", JSON_CONTENT_TYPE);
         response.set("headers", headers);
-        if (body != null) {
-            response.set("jsonBody", mapper.valueToTree(body));
-        }
+        if (body != null) response.set("jsonBody", mapper.valueToTree(body));
         stub.set("response", response);
         return stub;
     }
 
-    private ObjectNode requireStubCopy(String method, String urlPattern) throws IOException {
-        JsonNode existing = findStub(method, urlPattern);
-        if (existing == null) {
-            throw new IllegalStateException("No stub found for " + method + " " + urlPattern);
-        }
+    private ObjectNode requireActiveCopy(String method, String urlPattern) throws IOException {
+        JsonNode existing = findActiveStub(method, urlPattern);
+        if (existing == null) throw new IllegalStateException("No stub found for " + method + " " + urlPattern);
         return (ObjectNode) mapper.readTree(existing.toString());
     }
 
     private ArrayNode requireArray(ObjectNode stub, String method, String urlPattern) {
         JsonNode body = stub.path("response").path("jsonBody");
-        if (!body.isArray()) {
-            throw new IllegalStateException(
-                    "jsonBody for " + method + " " + urlPattern + " is not an array.");
-        }
+        if (!body.isArray()) throw new IllegalStateException(
+                "jsonBody for " + method + " " + urlPattern + " is not an array.");
         return (ArrayNode) body;
     }
 
     private void requireInBounds(ArrayNode array, int index) {
-        if (index < 0 || index >= array.size()) {
-            throw new IndexOutOfBoundsException(
-                    "Index " + index + " out of bounds (size=" + array.size() + ")");
-        }
+        if (index < 0 || index >= array.size()) throw new IndexOutOfBoundsException(
+                "Index " + index + " out of bounds (size=" + array.size() + ")");
     }
 
-    // -------------------------------------------------------------------------
-    // Raw HTTP helpers
-    // -------------------------------------------------------------------------
+    // ── raw HTTP ───────────────────────────────────────────────────────────────
 
     private String httpGet(String url) throws IOException {
         return readResponse(openConnection(url, "GET"));
@@ -294,24 +257,11 @@ public class WireMockAdminClient implements StubClient {
     private String httpPost(String url, String body) throws IOException {
         HttpURLConnection conn = openConnection(url, "POST");
         conn.setDoOutput(true);
-        conn.setRequestProperty("Content-Type", CONTENT_TYPE_JSON);
+        conn.setRequestProperty("Content-Type", JSON_CONTENT_TYPE);
         try (OutputStream os = conn.getOutputStream()) {
             os.write(body.getBytes(StandardCharsets.UTF_8));
         }
         return readResponse(conn);
-    }
-
-    private void httpPut(String url, String body) throws IOException {
-        HttpURLConnection conn = openConnection(url, "PUT");
-        conn.setDoOutput(true);
-        conn.setRequestProperty("Content-Type", CONTENT_TYPE_JSON);
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(body.getBytes(StandardCharsets.UTF_8));
-        }
-        int code = conn.getResponseCode();
-        if (code < 200 || code >= 300) {
-            throw new IOException("HTTP PUT " + url + " returned " + code);
-        }
     }
 
     private HttpURLConnection openConnection(String urlStr, String method) throws IOException {
@@ -326,8 +276,7 @@ public class WireMockAdminClient implements StubClient {
         int code = conn.getResponseCode();
         java.io.InputStream is = (code < 400) ? conn.getInputStream() : conn.getErrorStream();
         if (is == null) return "";
-        byte[] bytes = is.readAllBytes();
-        String body = new String(bytes, StandardCharsets.UTF_8);
+        String body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
         if (code >= 400) throw new IOException("HTTP " + code + ": " + body);
         return body;
     }

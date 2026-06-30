@@ -139,41 +139,20 @@ public final class WireMockIntegrationSupport implements AutoCloseable {
     /**
      * Begin a fluent override for the stub matching the given method + URL pattern.
      *
-     * <p>Call {@link StubOverride#with(String, Object)} to specify which fields to change,
-     * then {@link StubOverride#apply()} to commit.  All fields <em>not</em> listed in
-     * {@code with()} retain their OpenAPI spec example values.
-     *
      * <pre>{@code
-     * wiremock.forStub("GET", "/med/([^/]+)")
-     *         .with("status", "discontinued")
-     *         .with("name", "OldDrug")
-     *         .apply();
+     * // Select example by index, keep all its fields
+     * wiremock.forStub("GET", "/med/([^/]+)").example(2).apply();
+     *
+     * // Select example AND change some fields
+     * wiremock.forStub("GET", "/med/([^/]+)").example(2).with("status", "recalled").apply();
+     *
+     * // Patch fields on whatever is currently active (no example switch)
+     * wiremock.forStub("GET", "/med/([^/]+)").with("status", "discontinued").apply();
      * }</pre>
      */
     public StubOverride forStub(String method, String urlPattern) {
         ensureStarted();
         return new StubOverride(adminClient, method, urlPattern);
-    }
-
-    /**
-     * Begin a fluent sequential-response builder for the same endpoint.
-     *
-     * <p>Use this when a <em>single test</em> needs the same request to return different
-     * payloads on successive calls (polling, retry, state-change flows).
-     * For per-test static overrides use {@link #forStub} instead.
-     *
-     * <pre>{@code
-     * wiremock.forSequence("med-status-flow", "GET", "/med/([^/]+)")
-     *         .thenReturn(activeMed)
-     *         .thenReturn(discontinuedMed)
-     *         .register();
-     * }</pre>
-     *
-     * @param scenarioName unique name for this scenario (any string)
-     */
-    public StubSequence forSequence(String scenarioName, String method, String urlPattern) {
-        ensureStarted();
-        return new StubSequence(adminClient, scenarioName, method, urlPattern);
     }
     // -------------------------------------------------------------------------
 

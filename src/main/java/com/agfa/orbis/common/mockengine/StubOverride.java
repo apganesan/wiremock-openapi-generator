@@ -1,6 +1,6 @@
 package com.agfa.orbis.common.mockengine;
-import com.agfa.orbis.common.mockengine.api.*;
-import com.agfa.orbis.common.mockengine.impl.*;
+
+import com.agfa.orbis.common.mockengine.api.StubClient;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -8,35 +8,28 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Fluent builder for partially overriding a stub's response at runtime.
+ * Fluent builder for overriding a stub's response at runtime.
  *
- * <p>Only the properties you explicitly set via {@link #with} are changed;
- * all other fields retain the values generated from the OpenAPI spec example.
- *
- * <h2>Usage</h2>
  * <pre>{@code
- * // Change only 'status' — all other fields keep their OpenAPI example values
- * wiremock.forStub("GET", "/med/([^/]+)")
- *         .with("status", "discontinued")
- *         .apply();
+ * // 1. Default (first OpenAPI example) — no setup needed
  *
- * // Change multiple fields in a single round-trip
- * wiremock.forStub("GET", "/med/([^/]+)")
- *         .with("status", "active")
- *         .with("name", "Ibuprofen 400mg")
- *         .with("dosage.unit", "mg")   // nested dot-path
- *         .apply();
+ * // 2. Select example by index, keep all its fields
+ * wiremock.forStub("GET", "/med/([^/]+)").example(2).apply();
+ *
+ * // 3. Select example AND change some fields
+ * wiremock.forStub("GET", "/med/([^/]+)").example(2).with("status", "recalled").apply();
+ *
+ * // 4. Patch fields on whatever is currently active (no example switch)
+ * wiremock.forStub("GET", "/med/([^/]+)").with("status", "discontinued").apply();
  * }</pre>
- *
- * <p>{@link #apply()} performs a single Admin API round-trip:
- * read existing stub → merge changes → re-register with priority 1.
  */
 public final class StubOverride {
 
-    private final StubClient client;
-    private final String method;
-    private final String urlPattern;
-    private final Map<String, Object> properties = new LinkedHashMap<>();
+    private final StubClient        client;
+    private final String            method;
+    private final String            urlPattern;
+    private       Integer           exampleIndex = null;   // null = use currently active stub
+    private final Map<String,Object> patches     = new LinkedHashMap<>();
 
     StubOverride(StubClient client, String method, String urlPattern) {
         this.client     = client;
@@ -45,31 +38,31 @@ public final class StubOverride {
     }
 
     /**
-     * Set a single property by dot-notation path.
-     *
-     * @param jsonPath dot-separated path to the field (e.g. {@code "status"} or {@code "address.city"})
-     * @param value    new value for that field
-     * @return {@code this} for chaining
+     * Select which OpenAPI example to use as the base body (0 = first, 1 = second, …).
+     * Fields set via {@link #with} are applied on top.
      */
-    public StubOverride with(String jsonPath, Object value) {
-        properties.put(jsonPath, value);
+    public StubOverride example(int index) {
+        if (index < 0) throw new IndexOutOfBoundsException("Example index must be >= 0");
+        this.exampleIndex = index;
         return this;
     }
 
     /**
-     * Apply all accumulated property changes in a single Admin API round-trip.
-     * Read existing stub → merge → re-register.
-     *
-     * @throws IllegalStateException if the stub cannot be found or has no {@code jsonBody}
-     * @throws UncheckedIOException  if the Admin API call fails
+     * Override one field by dot-path (e.g. {@code "status"} or {@code "address.city"}).
+     * Only listed fields change; all others keep the base body's values.
      */
+    public StubOverride with(String jsonPath, Object value) {
+        patches.put(jsonPath, value);
+        return this;
+    }
+
+    /** Commit the override in a single Admin API round-trip. */
     public void apply() {
-        if (properties.isEmpty()) return;
         try {
-            client.patchProperties(method, urlPattern, properties);
+            client.applyOverride(method, urlPattern, exampleIndex, patches);
         } catch (IOException e) {
             throw new UncheckedIOException(
-                    "Failed to patch stub " + method + " " + urlPattern, e);
+                    "Failed to apply override for " + method + " " + urlPattern, e);
         }
     }
 }

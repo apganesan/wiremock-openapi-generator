@@ -7,25 +7,16 @@ import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Demonstrates two ways to return different responses for the same request.
+ * Integration test — single forStub() API handles all cases:
  *
- * ┌──────────────────┬─────────────────────────────────────────────────────────┐
- * │ Mechanism        │ When to use                                             │
- * ├──────────────────┼─────────────────────────────────────────────────────────┤
- * │ forStub().with() │ Each TEST needs a different static response.            │
- * │                  │ @BeforeEach resets to spec defaults; each test          │
- * │                  │ overrides only what it cares about.                     │
- * ├──────────────────┼─────────────────────────────────────────────────────────┤
- * │ forSequence()    │ One TEST needs the SAME endpoint to return different    │
- * │                  │ payloads on successive calls (polling, retry, state     │
- * │                  │ transitions).                                           │
- * └──────────────────┴─────────────────────────────────────────────────────────┘
+ *   .apply()                   → pure example switch (or no-op if no example()/with())
+ *   .example(i).apply()        → switch to OpenAPI example i (0-based)
+ *   .example(i).with(k,v)...   → switch to example i, then patch some fields
+ *   .with(k,v)...apply()       → patch fields on whatever is currently active
  */
 class MedicationServiceTest {
 
@@ -40,8 +31,8 @@ class MedicationServiceTest {
     }
 
     @BeforeEach
-    void resetToSpecDefaults() {
-        wiremock.resetStubs();   // each test starts from OpenAPI example values
+    void resetToDefault() {
+        wiremock.resetStubs();   // back to first OpenAPI example before each test
     }
 
     @AfterAll
@@ -49,61 +40,52 @@ class MedicationServiceTest {
         wiremock.stop();
     }
 
-    // =========================================================================
-    // Mechanism 1 — forStub().with()
-    // Different test = different static response; untouched fields keep spec values
-    // =========================================================================
+    // ── 1. Default ─────────────────────────────────────────────────────────────
 
     @Test
-    void default_returnsSpecExample() throws Exception {
-        // No override — response comes straight from the OpenAPI example
+    void default_returnsFirstExample() throws Exception {
+        assertEquals(200, GET("/med/1"));   // no setup — first OpenAPI example served
+    }
+
+    // ── 2. Pure example selection ──────────────────────────────────────────────
+
+    @Test
+    void selectSecondExample() throws Exception {
+        wiremock.forStub("GET", "/med/([^/]+)").example(1).apply();
         assertEquals(200, GET("/med/1"));
     }
 
     @Test
-    void context_active_medication() {
-        // Only 'status' changes; name, dosage, id … keep their OpenAPI example values
-        wiremock.forStub("GET", "/med/([^/]+)")
-                .with("status", "active")
-                .apply();
+    void selectThirdExample() throws Exception {
+        wiremock.forStub("GET", "/med/([^/]+)").example(2).apply();
+        assertEquals(200, GET("/med/1"));
     }
 
+    // ── 3. Patch current active (no example switch) ───────────────────────────
+
     @Test
-    void context_discontinued_medication() {
+    void patchOnDefault() throws Exception {
+        // status changes; all other fields keep ibuprofen (first example) values
         wiremock.forStub("GET", "/med/([^/]+)")
                 .with("status", "discontinued")
-                .with("name", "OldDrug 200mg")   // two fields change, rest stays
                 .apply();
+        assertEquals(200, GET("/med/1"));
     }
 
-    // =========================================================================
-    // Mechanism 2 — forSequence()
-    // Same request, different response on each successive call (scenario / state machine)
-    // =========================================================================
+    // ── 4. Select example THEN patch some fields ──────────────────────────────
 
     @Test
-    void sequence_pollingStatusChange() throws Exception {
-        Map<String, Object> active = new LinkedHashMap<>();
-        active.put("id", "med-001");
-        active.put("status", "active");
-
-        Map<String, Object> discontinued = new LinkedHashMap<>();
-        discontinued.put("id", "med-001");
-        discontinued.put("status", "discontinued");
-
-        // Register: 1st call → active, 2nd call → discontinued, then cycles
-        wiremock.forSequence("med-status-flow", "GET", "/med/([^/]+)")
-                .thenReturn(active)
-                .thenReturn(discontinued)
-                .register();
-
-        // Same URL, different payload each time
-        assertEquals(200, GET("/med/med-001"));   // → active
-        assertEquals(200, GET("/med/med-001"));   // → discontinued
-        assertEquals(200, GET("/med/med-001"));   // → active again (cycles)
+    void selectExampleThenPatch() throws Exception {
+        // Switch to 3rd example (metformin) and override only status
+        wiremock.forStub("GET", "/med/([^/]+)")
+                .example(2)
+                .with("status", "recalled")
+                .apply();
+        // Response: metformin body with status="recalled"; all other fields from metformin example
+        assertEquals(200, GET("/med/1"));
     }
 
-    // =========================================================================
+    // ── helpers ────────────────────────────────────────────────────────────────
 
     private static int GET(String path) throws Exception {
         HttpURLConnection conn = (HttpURLConnection)

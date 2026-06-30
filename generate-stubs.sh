@@ -36,7 +36,7 @@ echo "▶ Generating WireMock stubs from: $OPENAPI_FILE"
 mkdir -p "$MAPPINGS_DIR"
 
 java -cp "$JAR" \
-    com.agfa.orbis.common.mockengine.OpenApiToWireMockGenerator \
+    com.agfa.orbis.common.mockengine.StubGeneratorCli \
     "$OPENAPI_FILE" \
     "$MAPPINGS_DIR"
 
