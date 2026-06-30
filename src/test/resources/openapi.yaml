@@ -1,0 +1,220 @@
+---
+openapi: 3.0.3
+info:
+  title: Med Target System API
+  description: OpenAPI specification for the Med Target System exposing medication
+    endpoints
+  version: 1.0-SNAPSHOT
+tags:
+- name: Medication
+  description: Operations for managing medication records in the target system
+paths:
+  /med:
+    post:
+      tags:
+      - Medication
+      summary: Create a medication record
+      description: Accepts a MedRequest payload and persists a new medication record
+        in the target system. Returns the created MedResponse with the assigned identifier.
+      operationId: createMedication
+      requestBody:
+        description: Medication data to create
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MedRequestDto"
+            examples:
+              default:
+                summary: Default medication request
+                value:
+                  id: 42
+                  name: Ibuprofen
+                  type: analgesic
+        required: true
+      responses:
+        "200":
+          description: Medication successfully created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MedResponseDto"
+              examples:
+                ibuprofen:
+                  summary: Analgesic medication created
+                  value:
+                    id: 1
+                    name: Ibuprofen
+                    type: analgesic
+                    properties:
+                      dosage: 200mg
+                      route: oral
+                      frequency: twice daily
+                amoxicillin:
+                  summary: Antibiotic medication created
+                  value:
+                    id: 2
+                    name: Amoxicillin
+                    type: antibiotic
+                    properties:
+                      dosage: 500mg
+                      route: oral
+                      frequency: three times daily
+                metformin:
+                  summary: Antidiabetic medication created
+                  value:
+                    id: 3
+                    name: Metformin
+                    type: antidiabetic
+                    properties:
+                      dosage: 850mg
+                      route: oral
+                      frequency: twice daily
+        "400":
+          description: Invalid request payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MedError"
+              examples:
+                default:
+                  summary: Default 400 error
+                  value:
+                    code: 400
+                    message: The request payload is missing required fields
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MedError"
+              examples:
+                default:
+                  summary: Default 500 error
+                  value:
+                    code: 500
+                    message: An unexpected error occurred
+  /med/{id}:
+    get:
+      tags:
+      - Medication
+      summary: Fetch a medication record by ID
+      description: Retrieves a single medication record identified by its numeric
+        ID. An optional 'type' query parameter can be used to filter or validate the
+        result by medication category.
+      operationId: getMedicationById
+      parameters:
+      - name: id
+        in: path
+        description: Numeric identifier of the medication record
+        required: true
+        schema:
+          type: integer
+        example: 1
+      - name: type
+        in: query
+        description: Optional medication type filter
+        required: false
+        schema:
+          type: string
+        example: analgesic
+      responses:
+        "200":
+          description: Medication record found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MedResponseDto"
+              examples:
+                ibuprofen:
+                  summary: Analgesic medication record
+                  value:
+                    id: 1
+                    name: Ibuprofen
+                    type: analgesic
+                    properties:
+                      dosage: 200mg
+                      route: oral
+                      frequency: twice daily
+                amoxicillin:
+                  summary: Antibiotic medication record
+                  value:
+                    id: 2
+                    name: Amoxicillin
+                    type: antibiotic
+                    properties:
+                      dosage: 500mg
+                      route: oral
+                      frequency: three times daily
+                metformin:
+                  summary: Antidiabetic medication record
+                  value:
+                    id: 3
+                    name: Metformin
+                    type: antidiabetic
+                    properties:
+                      dosage: 850mg
+                      route: oral
+                      frequency: twice daily
+        "404":
+          description: Medication record not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MedError"
+              examples:
+                default:
+                  summary: Default 404 error
+                  value:
+                    code: 404
+                    message: Medication record not found
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MedError"
+              examples:
+                default:
+                  summary: Default 500 error
+                  value:
+                    code: 500
+                    message: An unexpected error occurred
+components:
+  schemas:
+    MedError:
+      description: Error response returned when a medication operation fails
+      type: object
+      properties:
+        code:
+          format: int32
+          description: HTTP status code of the error
+          type: integer
+          example: 400
+        message:
+          description: Human-readable description of the error
+          type: string
+          example: The request payload is missing required fields
+    MedRequestDto:
+      type: object
+      properties:
+        id:
+          format: int32
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+    MedResponseDto:
+      type: object
+      properties:
+        id:
+          format: int32
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+        properties:
+          type: object
+          additionalProperties:
+            type: string
