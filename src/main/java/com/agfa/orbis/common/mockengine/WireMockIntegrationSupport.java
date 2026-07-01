@@ -10,57 +10,6 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-/**
- * Facade that wires together stub generation, server lifecycle, and runtime stub
- * management into a single, easy-to-use integration-test utility.
- *
- * <p>Depends only on the {@link StubGenerator}, {@link MockServer}, and {@link StubClient}
- * interfaces — concrete implementations can be swapped via the {@link Builder} (DIP).
- *
- * <h2>Typical usage</h2>
- * <pre>{@code
- * class MyServiceTest {
- *
- *     static WireMockIntegrationSupport wiremock;
- *
- *     @BeforeAll
- *     static void start() {
- *         wiremock = WireMockIntegrationSupport.builder()
- *                 .openApiFile("src/test/resources/my-service.yaml")
- *                 .build()
- *                 .start();
- *     }
- *
- *     @BeforeEach
- *     void reset() { wiremock.resetStubs(); }   // each test starts from OpenAPI defaults
- *
- *     @AfterAll
- *     static void stop() { wiremock.stop(); }
- *
- *     // -- default mock (OpenAPI example values) --
- *     @Test
- *     void defaultResponse() { ... httpGet(wiremock.getBaseUrl() + "/api/items/1") ... }
- *
- *     // -- context-specific: change ONE field, keep everything else from the spec --
- *     @Test
- *     void discontinuedItem() {
- *         wiremock.forStub("GET", "/api/items/([^/]+)")
- *                 .with("status", "discontinued")
- *                 .apply();
- *         // only 'status' changed; all other fields keep their OpenAPI example values
- *     }
- * }
- * }</pre>
- *
- * <h2>Try-with-resources</h2>
- * <pre>{@code
- * try (WireMockIntegrationSupport wm = WireMockIntegrationSupport.builder()
- *         .openApiFile("src/test/resources/my-service.yaml")
- *         .build().start()) {
- *     // tests
- * }
- * }</pre>
- */
 public final class WireMockIntegrationSupport implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(WireMockIntegrationSupport.class);
@@ -136,20 +85,6 @@ public final class WireMockIntegrationSupport implements AutoCloseable {
     // Partial property override — the primary test-time API
     // -------------------------------------------------------------------------
 
-    /**
-     * Begin a fluent override for the stub matching the given method + URL pattern.
-     *
-     * <pre>{@code
-     * // Select example by index, keep all its fields
-     * wiremock.forStub("GET", "/med/([^/]+)").example(2).apply();
-     *
-     * // Select example AND change some fields
-     * wiremock.forStub("GET", "/med/([^/]+)").example(2).with("status", "recalled").apply();
-     *
-     * // Patch fields on whatever is currently active (no example switch)
-     * wiremock.forStub("GET", "/med/([^/]+)").with("status", "discontinued").apply();
-     * }</pre>
-     */
     public StubOverride forStub(String method, String urlPattern) {
         ensureStarted();
         return new StubOverride(adminClient, method, urlPattern);

@@ -10,14 +10,7 @@ import java.net.URL;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Integration test — single forStub() API handles all cases:
- *
- *   .apply()                   → pure example switch (or no-op if no example()/with())
- *   .example(i).apply()        → switch to OpenAPI example i (0-based)
- *   .example(i).with(k,v)...   → switch to example i, then patch some fields
- *   .with(k,v)...apply()       → patch fields on whatever is currently active
- */
+
 class MedicationServiceTest {
 
     static WireMockIntegrationSupport wiremock;

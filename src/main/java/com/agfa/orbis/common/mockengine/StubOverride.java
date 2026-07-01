@@ -7,22 +7,6 @@ import java.io.UncheckedIOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * Fluent builder for overriding a stub's response at runtime.
- *
- * <pre>{@code
- * // 1. Default (first OpenAPI example) — no setup needed
- *
- * // 2. Select example by index, keep all its fields
- * wiremock.forStub("GET", "/med/([^/]+)").example(2).apply();
- *
- * // 3. Select example AND change some fields
- * wiremock.forStub("GET", "/med/([^/]+)").example(2).with("status", "recalled").apply();
- *
- * // 4. Patch fields on whatever is currently active (no example switch)
- * wiremock.forStub("GET", "/med/([^/]+)").with("status", "discontinued").apply();
- * }</pre>
- */
 public final class StubOverride {
 
     private final StubClient        client;

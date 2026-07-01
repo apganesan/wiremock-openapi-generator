@@ -2,19 +2,7 @@ package com.agfa.orbis.common.mockengine;
 
 import com.agfa.orbis.common.mockengine.impl.OpenApiStubGenerator;
 
-/**
- * CLI entry point for generating WireMock stubs from an OpenAPI spec.
- *
- * <pre>
- * Usage:
- *   java -cp wiremock-openapi-generator-*-jar-with-dependencies.jar \
- *        com.agfa.orbis.common.mockengine.StubGeneratorCli \
- *        &lt;openapi-file&gt; &lt;output-dir&gt;
- *
- * Example:
- *   java -cp ... StubGeneratorCli src/main/resources/openapi.yaml wiremock/mappings
- * </pre>
- */
+
 public class StubGeneratorCli {
 
     public static void main(String[] args) {
