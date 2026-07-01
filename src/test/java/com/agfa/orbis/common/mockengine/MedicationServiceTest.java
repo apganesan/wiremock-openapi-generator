@@ -19,6 +19,7 @@ class MedicationServiceTest {
     static void startServer() {
         wiremock = WireMockIntegrationSupport.builder()
                 .openApiFile("src/test/resources/openapi.yaml")
+                .mockServer(new DockerWireMockServer())
                 .build()
                 .start();
     }

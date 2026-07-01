@@ -1,42 +1,49 @@
 # WireMock OpenAPI Generator
 
-A production-ready Java application that reads an **OpenAPI 3.0** specification and automatically
-generates **WireMock** stub mappings — one file per example per endpoint — so that every named
-example in the spec can be served as a distinct mock response.
+A Java library that reads an **OpenAPI 3.0** specification and automatically generates
+**WireMock** stub mappings, then provides a clean API for switching between examples and
+patching response fields at test time — without restarting the server.
 
 ## Key Features
 
-- 📄 **OpenAPI 3.0 parsing** — YAML and JSON formats supported  
-- 🔀 **Multiple stubs per endpoint** — one stub file per named `examples` entry  
-- 🎭 **WireMock scenario system** — switch between stubs at runtime without restart  
-- 🔧 **Runtime overrides** — Java client and curl commands for Admin API mutations  
-- 🐳 **Docker Compose deployment** — single-command start  
-- 📦 **Embedded server mode** — no Docker required for local development  
+- 📄 **OpenAPI 3.0 parsing** — YAML and JSON formats supported
+- 📁 **One stub per endpoint** — first example served by default; switch to any named example at runtime without restarting
+- 🔧 **Fluent test API** — select an example and patch individual fields in a single call
+- ✅ **Schema validation** — examples are validated against the OpenAPI response schema at generation time
+- 🐳 **Docker Compose deployment** — single-command start; recommended for integration tests
+- 📦 **Embedded server mode** — random-port, in-process WireMock for lightweight unit tests
+- 🔌 **Extensible interfaces** — swap out `StubGenerator` or `MockServer` implementations
 
 ---
 
 ## Architecture
 
 ```
-┌───────────────────┐        ┌────────────────────────────┐
-│  sample-openapi   │──────▶ │  OpenApiToWireMockGenerator │
-│     .yaml         │        │  (swagger-parser)           │
-└───────────────────┘        └────────────┬───────────────┘
-                                          │  writes JSON files
-                                          ▼
-                             ┌────────────────────────────┐
-                             │  wiremock/mappings/*.json   │
-                             └────────────┬───────────────┘
-                                          │  volume mount
-                          ┌───────────────┴──────────────┐
-                          │       WireMock Server         │
-                          │  (Docker or Embedded JVM)     │
-                          └───────────────┬──────────────┘
-                                          │  Admin API
-                          ┌───────────────▼──────────────┐
-                          │  EnhancedRuntimeStubManager   │
-                          │  (HTTP client → /__admin)     │
-                          └──────────────────────────────┘
+┌──────────────────────┐        ┌──────────────────────────────┐
+│   openapi.yaml       │──────▶ │  OpenApiStubGenerator        │
+│  (YAML / JSON spec)  │        │  (swagger-parser)            │
+└──────────────────────┘        └─────────────┬────────────────┘
+                                              │  writes JSON files
+                                              ▼
+                                 ┌────────────────────────────┐
+                                 │  wiremock/mappings/*.json  │
+                                 │  (one file per endpoint)   │
+                                 └─────────────┬──────────────┘
+                                               │  loaded on start
+                          ┌────────────────────┴─────────────┐
+                          │      EmbeddedWireMockServer       │
+                          │   (or Docker via docker-compose)  │
+                          └────────────────────┬─────────────┘
+                                               │  Admin API
+                          ┌────────────────────▼─────────────┐
+                          │       WireMockAdminClient         │
+                          │  selectExample / patch / reset    │
+                          └──────────────────────────────────┘
+                                               ▲
+                          ┌────────────────────┴─────────────┐
+                          │    WireMockIntegrationSupport     │
+                          │  (main facade — builder pattern)  │
+                          └──────────────────────────────────┘
 ```
 
 ---
@@ -51,7 +58,7 @@ example in the spec can be served as a distinct mock response.
 ./start-wiremock.sh
 
 # 3. Test the API
-curl http://localhost:8080/api/users
+curl http://localhost:8080/med/1
 ```
 
 ---
@@ -83,123 +90,190 @@ mvn clean package
 
 ### OpenAPI Parsing
 
-`OpenApiToWireMockGenerator` uses [swagger-parser](https://github.com/swagger-api/swagger-parser)
-to load the spec with all `$ref` pointers fully resolved.  It then iterates every path and every
+`OpenApiStubGenerator` uses [swagger-parser](https://github.com/swagger-api/swagger-parser)
+to load the spec with all `$ref` pointers fully resolved. It iterates every path and every
 HTTP method (`GET`, `POST`, `PUT`, `DELETE`, `PATCH`).
 
-### Multiple Examples → Multiple Stubs
+### One Stub per Endpoint
 
-For each response that contains a `content.application/json.examples` map, **one stub file is
-created per named example**:
+**One stub file is written per endpoint** (not per example). When multiple named examples
+exist in the spec:
+
+- The **first example** becomes the default `jsonBody` served for any matching request.
+- **All examples** (name + body) are stored in `metadata.examples` so a test can call
+  `selectExample(index)` to switch the active response at runtime — no WireMock scenario
+  state machine involved.
 
 ```yaml
 # OpenAPI spec
-/api/users/{id}:
+/med/{id}:
   get:
     responses:
       '200':
         content:
           application/json:
             examples:
-              normalUser:   # → getUser-normalUser.json
-                value: { ... }
-              adminUser:    # → getUser-adminUser.json
-                value: { ... }
-              inactiveUser: # → getUser-inactiveUser.json
-                value: { ... }
+              ibuprofen:    # ← default response (index 0)
+                value: { id: 1, name: Ibuprofen, ... }
+              amoxicillin:  # ← index 1
+                value: { id: 2, name: Amoxicillin, ... }
+              metformin:    # ← index 2
+                value: { id: 3, name: Metformin, ... }
 ```
 
-### Scenario System
+Running `./generate-stubs.sh` produces **one file** (`getMedicationById.json`) that
+contains all three examples in its metadata.
 
-Each group of stubs for the same `operationId` shares a **WireMock scenario**.  The active
-example is selected by the scenario's current state.
+### Schema Validation
 
-```
-scenarioName        = operationId        (e.g. "getUser")
-requiredScenarioState = exampleName     (e.g. "normalUser")
-```
-
-Switch the active stub at any time:
-
-```bash
-curl -X PUT http://localhost:8080/__admin/scenarios/getUser/state \
-     -H "Content-Type: application/json" \
-     -d '{"state": "adminUser"}'
-```
+Each example is validated against the OpenAPI response schema before the stub is written.
+Violations are logged as `WARN` — generation always completes so a partial spec does not
+block the build.
 
 ### Priority System
 
-| Stub type | Priority value | Effect |
-|-----------|---------------|--------|
+| Stub type | Priority | Effect |
+|-----------|----------|--------|
 | Generated (default) | 5 | Baseline mock |
 | Runtime override | 1 | Always wins over generated stubs |
 
 ### Path Parameters → Regex
 
-`/api/users/{id}` is translated to the WireMock URL pattern `/api/users/([^/]+)` so any value
-is matched.
-
-### Array Responses
-
-Array-typed examples are stored as `jsonBody` arrays and can be manipulated element-by-element
-via `EnhancedRuntimeStubManager` without recreating the entire stub.
+`/med/{id}` is translated to the WireMock URL pattern `/med/([^/]+)` so any value matches.
 
 ---
 
 ## Sample OpenAPI File
 
-`src/main/resources/sample-openapi.yaml` defines:
+`src/main/resources/openapi.yaml` defines a **Med Target System API**:
 
 | Endpoint | Method | Examples |
 |----------|--------|----------|
-| `/api/users` | GET | `smallList`, `largeList`, `emptyList` |
-| `/api/users` | POST | `regularUser`, `adminUser` |
-| `/api/users/{id}` | GET | `normalUser`, `adminUser`, `inactiveUser` |
-| `/api/users/{id}` | PUT | `updated` |
-| `/api/users/{id}` | DELETE | *(204 No Content)* |
+| `/med` | POST | `ibuprofen`, `amoxicillin`, `metformin` |
+| `/med/{id}` | GET | `ibuprofen`, `amoxicillin`, `metformin` |
 
-Running `./generate-stubs.sh` produces **10 stub files** in `wiremock/mappings/`.
+Running `./generate-stubs.sh` produces **2 stub files** in `wiremock/mappings/`.
 
 ---
 
 ## Generated Stub Example
 
-`wiremock/mappings/getUser-normalUser.json`
+`wiremock/mappings/getMedicationById.json`
 
 ```json
 {
   "request": {
     "method": "GET",
-    "urlPathPattern": "/api/users/([^/]+)"
+    "urlPathPattern": "/med/([^/]+)"
   },
   "response": {
     "status": 200,
     "jsonBody": {
       "id": 1,
-      "name": "Alice Johnson",
-      "email": "alice@example.com",
-      "role": "user",
-      "status": "active",
-      "createdAt": "2023-01-15T08:00:00Z",
-      "profile": {
-        "bio": "Software engineer",
-        "location": "New York, USA",
-        "website": "https://alice.example.com"
-      },
-      "permissions": ["read", "write"]
+      "name": "Ibuprofen",
+      "type": "analgesic",
+      "properties": {
+        "dosage": "200mg",
+        "route": "oral",
+        "frequency": "twice daily"
+      }
     },
     "headers": { "Content-Type": "application/json" }
   },
-  "scenarioName": "getUser",
-  "requiredScenarioState": "normalUser",
   "priority": 5,
   "metadata": {
     "generatedFrom": "OpenAPI",
-    "operationId": "getUser",
-    "exampleName": "normalUser",
-    "generatedAt": 1718000000000
+    "operationId": "getMedicationById",
+    "examples": [
+      { "name": "ibuprofen",   "body": { "id": 1, "name": "Ibuprofen", ... } },
+      { "name": "amoxicillin", "body": { "id": 2, "name": "Amoxicillin", ... } },
+      { "name": "metformin",   "body": { "id": 3, "name": "Metformin", ... } }
+    ]
   }
 }
+```
+
+---
+
+## Using in Tests — `WireMockIntegrationSupport`
+
+`WireMockIntegrationSupport` is the main entry point for JUnit tests. It generates stubs,
+starts an embedded WireMock server, and exposes a fluent API for runtime overrides.
+
+### Minimal Setup (JUnit 5)
+
+```java
+class MedicationServiceTest {
+
+    static WireMockIntegrationSupport wiremock;
+
+    @BeforeAll
+    static void startServer() {
+        wiremock = WireMockIntegrationSupport.builder()
+                .openApiFile("src/test/resources/openapi.yaml")
+                // .port(8080)          // fixed port (default: random free port)
+                // .mappingsDir("...")   // explicit dir (default: temp dir, auto-cleaned)
+                .build()
+                .start();
+    }
+
+    @BeforeEach
+    void resetToDefault() {
+        wiremock.resetStubs();   // back to first OpenAPI example before each test
+    }
+
+    @AfterAll
+    static void stopServer() {
+        wiremock.stop();
+    }
+}
+```
+
+### Selecting an Example
+
+```java
+// Use the second example (index 1 = amoxicillin)
+wiremock.forStub("GET", "/med/([^/]+)").example(1).apply();
+```
+
+### Patching Fields on the Active Stub
+
+```java
+// Change a single field; all other fields keep their current values
+wiremock.forStub("GET", "/med/([^/]+)")
+        .with("status", "discontinued")
+        .apply();
+```
+
+### Select an Example AND Patch Fields
+
+```java
+// Switch to metformin (index 2) then override just the status field
+wiremock.forStub("GET", "/med/([^/]+)")
+        .example(2)
+        .with("status", "recalled")
+        .apply();
+```
+
+### Reset to Default
+
+```java
+wiremock.resetStubs();   // removes all runtime overrides; first example is served again
+```
+
+### Array Body Operations (via `StubClient`)
+
+```java
+StubClient client = wiremock.getStubClient();
+
+// Patch one item in an array response
+client.patchArrayItem("GET", "/med", 0, Map.of("name", "Updated Drug"));
+
+// Append an item
+client.addArrayItem("GET", "/med", Map.of("id", 99, "name", "New Drug"));
+
+// Remove item at index 1
+client.removeArrayItem("GET", "/med", 1);
 ```
 
 ---
@@ -213,7 +287,7 @@ Running `./generate-stubs.sh` produces **10 stub files** in `wiremock/mappings/`
 ./wiremock/__files   →  /home/wiremock/__files
 ```
 
-### Starting WireMock (Docker — preferred)
+### Starting WireMock (Docker — recommended for integration tests)
 
 ```bash
 ./start-wiremock.sh
@@ -223,161 +297,117 @@ The script:
 1. Checks Docker is running
 2. Generates stubs if the mappings directory is empty
 3. Stops any existing container
-4. Starts `docker-compose up -d`
+4. Runs `docker compose up -d`
 5. Polls the health check and reports when ready
 
-### Starting WireMock (Embedded — no Docker)
+### Starting WireMock (Embedded — lightweight unit tests only)
+
+For isolated, fast unit tests where a full Docker stack isn't appropriate, `WireMockIntegrationSupport`
+starts an in-process WireMock server automatically (see _Using in Tests_ above).
+For integration tests that need to verify real network behaviour or interact with other
+Docker-based services, prefer the Docker mode above.
 
 ```bash
 java -cp target/wiremock-openapi-generator-1.0.0-jar-with-dependencies.jar \
-     com.example.mockgen.WireMockServerRunner \
-     wiremock/mappings 8080
-```
-
-Or run the full end-to-end workflow (generates + starts + demonstrates overrides):
-
-```bash
-java -jar target/wiremock-openapi-generator-1.0.0-jar-with-dependencies.jar
+     com.agfa.orbis.common.mockengine.StubGeneratorCli \
+     src/main/resources/openapi.yaml \
+     wiremock/mappings
 ```
 
 ---
 
-## Runtime Override Examples
+## Running Steps
 
-All examples below target `http://localhost:8080`.
+### Step 1 — Build
 
-### Override entire response (curl)
+```bash
+mvn clean package
+```
+
+Produces `target/wiremock-openapi-generator-1.0.0-jar-with-dependencies.jar`.
+
+### Step 2 — Generate Stubs
+
+```bash
+./generate-stubs.sh
+```
+
+Reads `src/main/resources/openapi.yaml` and writes JSON stubs to `wiremock/mappings/`.
+
+Or run the generator directly:
+
+```bash
+java -cp target/wiremock-openapi-generator-1.0.0-jar-with-dependencies.jar \
+     com.agfa.orbis.common.mockengine.StubGeneratorCli \
+     src/main/resources/openapi.yaml \
+     wiremock/mappings
+```
+
+### Step 3 — Start WireMock
+
+**Docker (recommended for integration tests):**
+
+```bash
+./start-wiremock.sh
+```
+
+**Embedded (for lightweight unit tests only):**
+
+Use `WireMockIntegrationSupport` in your test class — it generates stubs and starts an
+in-process server automatically (see _Using in Tests_ above). This avoids Docker overhead
+for fast, isolated unit tests, but is not a substitute for Docker-based integration testing.
+
+### Step 4 — Verify Endpoints
+
+```bash
+# Default (first example — ibuprofen)
+curl http://localhost:8080/med/1
+
+# Create a medication
+curl -X POST http://localhost:8080/med \
+     -H "Content-Type: application/json" \
+     -d '{"id":1,"name":"Ibuprofen","type":"analgesic"}'
+
+# Admin: list all registered stubs
+curl http://localhost:8080/__admin/mappings
+
+# Admin: reset stubs to disk state
+curl -X POST http://localhost:8080/__admin/mappings/reset
+```
+
+### Step 5 — Runtime Override (curl)
 
 ```bash
 curl -X POST http://localhost:8080/__admin/mappings \
      -H "Content-Type: application/json" \
      -d '{
-       "request": { "method": "GET", "urlPath": "/api/users/999" },
+       "request": { "method": "GET", "urlPath": "/med/999" },
        "response": {
          "status": 200,
          "headers": { "Content-Type": "application/json" },
-         "jsonBody": { "id": 999, "name": "Custom User", "role": "admin" }
+         "jsonBody": { "id": 999, "name": "Override Drug", "type": "experimental" }
        },
        "priority": 1
      }'
+
+# Verify
+curl http://localhost:8080/med/999
 ```
 
-### Override entire response (Java)
-
-```java
-EnhancedRuntimeStubManager manager = new EnhancedRuntimeStubManager("localhost", 8080);
-
-Map<String, Object> body = Map.of(
-    "id", 999,
-    "name", "Custom User",
-    "role", "admin"
-);
-manager.overrideStub("GET", "/api/users/999", body);
-```
-
-### Patch a single property
-
-```java
-// Set name of the GET /api/users response's first element
-manager.patchStubProperty("GET", "/api/users", "0.name", "Patched Name");
-```
-
-### Update a nested property
-
-```java
-// Update profile.location inside GET /api/users/1
-manager.patchStubProperty("GET", "/api/users/([^/]+)", "profile.location", "Berlin, Germany");
-```
-
-### Update an array item by index
-
-```java
-Map<String, Object> updates = Map.of("email", "new@example.com", "status", "inactive");
-manager.patchArrayItem("GET", "/api/users", 0, updates);
-```
-
-### Add an item to an array
-
-```java
-Map<String, Object> newUser = Map.of("id", 100, "name", "New User", "email", "new@example.com");
-manager.addArrayItem("GET", "/api/users", newUser);
-```
-
-### Remove an item from an array
-
-```java
-// Remove the element at index 1
-manager.removeArrayItem("GET", "/api/users", 1);
-```
-
-### Switch scenario state
+### Step 6 — Run Tests
 
 ```bash
-# Serve the "adminUser" example for GET /api/users/{id}
-curl -X PUT http://localhost:8080/__admin/scenarios/getUser/state \
-     -H "Content-Type: application/json" \
-     -d '{"state": "adminUser"}'
-```
+# JUnit tests (requires no running server — embedded WireMock starts automatically)
+mvn test
 
-```java
-manager.switchScenarioState("getUser", "adminUser");
-```
-
-### Reset to original state
-
-```bash
-curl -X POST http://localhost:8080/__admin/mappings/reset
-```
-
-```java
-manager.resetToOriginal();
-```
-
----
-
-## Testing
-
-Step-by-step:
-
-```bash
-# 1. Build
-mvn clean package
-
-# 2. Generate stubs
-./generate-stubs.sh
-
-# 3. Verify stub files
-ls wiremock/mappings/
-
-# 4. Start WireMock
-./start-wiremock.sh
-
-# 5. Test endpoints
-curl http://localhost:8080/api/users
-curl http://localhost:8080/api/users/1
-curl -X POST http://localhost:8080/api/users \
-     -H "Content-Type: application/json" \
-     -d '{"name":"Test","email":"t@example.com"}'
-
-# 6. Runtime override
-curl -X POST http://localhost:8080/__admin/mappings \
-     -H "Content-Type: application/json" \
-     -d '{"request":{"method":"GET","urlPath":"/api/users/999"},"response":{"status":200,"jsonBody":{"id":999,"name":"Override"}},"priority":1}'
-
-# 7. Verify override
-curl http://localhost:8080/api/users/999
-
-# 8. View all registered stubs
-curl http://localhost:8080/__admin/mappings
-
-# 9. Stop server
-./stop-wiremock.sh
-```
-
-Or run the automated test suite:
-
-```bash
+# Smoke-test a running Docker server
 ./test-stubs.sh
+```
+
+### Step 7 — Stop WireMock (Docker)
+
+```bash
+./stop-wiremock.sh
 ```
 
 ---
@@ -386,30 +416,39 @@ Or run the automated test suite:
 
 ```
 wiremock-openapi-generator/
-├── pom.xml                                    # Maven build descriptor
-├── docker-compose.yml                         # WireMock Docker service
-├── .dockerignore
-├── .gitignore
+├── pom.xml                                        # Maven build descriptor
+├── docker-compose.yml                             # WireMock Docker service
+├── generate-stubs.sh                              # Build + generate stubs
+├── start-wiremock.sh                              # Start Docker WireMock
+├── test-stubs.sh                                  # Smoke-test endpoints
+├── stop-wiremock.sh                               # Stop Docker WireMock
 │
-├── generate-stubs.sh                          # Build + generate stubs
-├── start-wiremock.sh                          # Start Docker WireMock
-├── test-stubs.sh                              # Smoke-test endpoints
-├── stop-wiremock.sh                           # Stop Docker WireMock
-│
-├── src/main/
-│   ├── java/com/example/mockgen/
-│   │   ├── OpenApiToWireMockGenerator.java    # Parses OpenAPI, writes stub files
-│   │   ├── WireMockServerRunner.java          # Manages embedded WireMock lifecycle
-│   │   ├── EnhancedRuntimeStubManager.java    # Admin API client (CRUD on stubs)
-│   │   └── MockServerWorkflow.java            # End-to-end demo; main() entry point
-│   └── resources/
-│       └── sample-openapi.yaml                # Sample OpenAPI 3.0 specification
+├── src/
+│   ├── main/
+│   │   ├── java/com/agfa/orbis/common/mockengine/
+│   │   │   ├── api/
+│   │   │   │   ├── StubGenerator.java             # Interface: spec → stub files
+│   │   │   │   ├── MockServer.java                # Interface: start/stop server
+│   │   │   │   └── StubClient.java                # Interface: Admin API operations
+│   │   │   ├── impl/
+│   │   │   │   ├── OpenApiStubGenerator.java      # Parses OpenAPI, writes stub JSON
+│   │   │   │   ├── EmbeddedWireMockServer.java    # Embedded WireMock lifecycle
+│   │   │   │   ├── WireMockAdminClient.java       # Admin API client (StubClient impl)
+│   │   │   │   └── OpenApiExampleValidator.java   # Schema validation for examples
+│   │   │   ├── WireMockIntegrationSupport.java    # Main facade (builder pattern)
+│   │   │   ├── StubOverride.java                  # Fluent override DSL
+│   │   │   └── StubGeneratorCli.java              # CLI entry point
+│   │   └── resources/
+│   │       └── openapi.yaml                       # Sample OpenAPI 3.0 specification
+│   └── test/
+│       ├── java/com/agfa/orbis/common/mockengine/
+│       │   └── MedicationServiceTest.java         # JUnit 5 integration tests
+│       └── resources/
+│           └── openapi.yaml                       # OpenAPI spec used by tests
 │
 └── wiremock/
-    ├── mappings/                              # Generated stub JSON files land here
-    │   └── .gitkeep
-    └── __files/                               # Static files for body references
-        └── .gitkeep
+    ├── mappings/                                  # Generated stub JSON files
+    └── __files/                                   # Static body reference files
 ```
 
 ---
@@ -419,16 +458,16 @@ wiremock-openapi-generator/
 ### Port 8080 is already in use
 
 ```bash
-# Find and kill the process using port 8080
-lsof -ti:8080 | xargs kill -9
-# Or change the port in docker-compose.yml and start-wiremock.sh
+# Find what's using port 8080
+lsof -i:8080
+# Change the port in docker-compose.yml if needed
 ```
 
 ### Stubs not loading
 
 - Ensure `./generate-stubs.sh` completed without errors
 - Check `wiremock/mappings/` contains `*.json` files
-- Inspect container logs: `docker-compose logs wiremock`
+- Inspect container logs: `docker compose logs wiremock`
 
 ### Docker issues
 
@@ -445,11 +484,10 @@ docker ps -a | grep wiremock
 
 ### Override not taking effect
 
-Verify the override stub has `"priority": 1`.  Generated stubs have `"priority": 5`.
+Verify the override stub has `"priority": 1`. Generated stubs use `"priority": 5`.
 Lower numbers take precedence in WireMock.
 
 ```bash
-# List all stubs and their priorities
 curl http://localhost:8080/__admin/mappings | python3 -m json.tool
 ```
 
@@ -461,9 +499,29 @@ curl http://localhost:8080/__admin/mappings | python3 -m json.tool
 
 ```bash
 java -cp target/wiremock-openapi-generator-1.0.0-jar-with-dependencies.jar \
-     com.example.mockgen.OpenApiToWireMockGenerator \
+     com.agfa.orbis.common.mockengine.StubGeneratorCli \
      /path/to/your-api.yaml \
      wiremock/mappings
+```
+
+Or point `WireMockIntegrationSupport` at it in tests:
+
+```java
+WireMockIntegrationSupport.builder()
+        .openApiFile("/path/to/your-api.yaml")
+        .build()
+        .start();
+```
+
+### Custom `StubGenerator` or `MockServer`
+
+```java
+WireMockIntegrationSupport.builder()
+        .openApiFile("my-api.yaml")
+        .stubGenerator(new MyCustomStubGenerator())   // implements StubGenerator
+        .mockServer(new MyCustomMockServer())          // implements MockServer
+        .build()
+        .start();
 ```
 
 ### CI/CD integration
@@ -474,12 +532,12 @@ java -cp target/wiremock-openapi-generator-1.0.0-jar-with-dependencies.jar \
   run: |
     mvn clean package -q
     java -cp target/wiremock-openapi-generator-1.0.0-jar-with-dependencies.jar \
-         com.example.mockgen.OpenApiToWireMockGenerator \
-         src/main/resources/sample-openapi.yaml \
+         com.agfa.orbis.common.mockengine.StubGeneratorCli \
+         src/main/resources/openapi.yaml \
          wiremock/mappings
 
 - name: Start WireMock
-  run: docker-compose up -d
+  run: docker compose up -d
 
 - name: Wait for WireMock
   run: |
@@ -487,34 +545,23 @@ java -cp target/wiremock-openapi-generator-1.0.0-jar-with-dependencies.jar \
       curl -sf http://localhost:8080/__admin/health && break
       sleep 2
     done
-```
 
-### Multiple environments
-
-Add environment-specific volumes or docker-compose overrides:
-
-```yaml
-# docker-compose.override.yml
-services:
-  wiremock:
-    volumes:
-      - ./wiremock/mappings-prod:/home/wiremock/mappings:ro
+- name: Run tests
+  run: mvn test
 ```
 
 ---
 
 ## API Reference
 
-| URL | Description |
-|-----|-------------|
-| `http://localhost:8080/api/users` | List users |
-| `http://localhost:8080/api/users/{id}` | Get / update / delete user |
-| `http://localhost:8080/__admin/mappings` | List all stub mappings |
-| `http://localhost:8080/__admin/mappings` (POST) | Add a new stub |
-| `http://localhost:8080/__admin/mappings/reset` (POST) | Reset to disk-persisted stubs |
-| `http://localhost:8080/__admin/scenarios` | List all scenarios |
-| `http://localhost:8080/__admin/scenarios/{name}/state` (PUT) | Switch scenario state |
-| `http://localhost:8080/__admin/health` | Health check |
+| URL | Method | Description |
+|-----|--------|-------------|
+| `http://localhost:8080/med` | POST | Create a medication record |
+| `http://localhost:8080/med/{id}` | GET | Get a medication record |
+| `http://localhost:8080/__admin/mappings` | GET | List all stub mappings |
+| `http://localhost:8080/__admin/mappings` | POST | Add a new stub |
+| `http://localhost:8080/__admin/mappings/reset` | POST | Reset to disk-persisted stubs |
+| `http://localhost:8080/__admin/health` | GET | Health check |
 
 ---
 
