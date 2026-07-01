@@ -7,19 +7,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Validates an OpenAPI example value against its declared response {@link Schema}.
- *
- * <p>Catches common drift between the spec and the example data:
- * <ul>
- *   <li>Missing required fields</li>
- *   <li>Wrong JSON type for a property (e.g. string where integer is expected)</li>
- *   <li>Unknown properties not declared in the schema</li>
- * </ul>
- *
- * <p>Returns a list of human-readable error messages.  An empty list means the example
- * is valid.  Callers decide whether to throw or log warnings.
- */
 public final class OpenApiExampleValidator {
 
     private OpenApiExampleValidator() {}

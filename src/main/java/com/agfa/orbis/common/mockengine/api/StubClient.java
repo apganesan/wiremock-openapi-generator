@@ -29,7 +29,10 @@ public interface StubClient {
 
     /**
      * Reset all stubs to the state generated from the spec.
-     * Removes all runtime overrides.
+     * Removes all runtime overrides and resets all scenario states to "Started".
      */
     void reset() throws IOException;
+
+    /** Switch a WireMock scenario to a specific state (e.g. "404", "500"). */
+    void switchScenarioState(String scenarioName, String state) throws IOException;
 }

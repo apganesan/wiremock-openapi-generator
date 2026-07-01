@@ -89,6 +89,22 @@ public final class WireMockIntegrationSupport implements AutoCloseable {
         ensureStarted();
         return new StubOverride(adminClient, method, urlPattern);
     }
+
+    /**
+     * Switch a scenario to an error state so the next request returns that HTTP status.
+     * Call {@link #resetStubs()} to return to the default success response.
+     *
+     * @param operationId  the OpenAPI {@code operationId} (used as WireMock scenario name)
+     * @param statusCode   the error HTTP status code to activate (e.g. 404, 500)
+     */
+    public void switchToError(String operationId, int statusCode) {
+        ensureStarted();
+        try {
+            adminClient.switchScenarioState(operationId, String.valueOf(statusCode));
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to switch scenario state", e);
+        }
+    }
     // -------------------------------------------------------------------------
 
     /** @return actual TCP port the server is listening on */

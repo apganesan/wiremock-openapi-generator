@@ -79,6 +79,28 @@ class MedicationServiceTest {
         assertEquals(200, GET("/med/1"));
     }
 
+    // ── 5. Error scenarios ────────────────────────────────────────────────────
+
+    @Test
+    void switchTo404_returnsNotFound() throws Exception {
+        wiremock.switchToError("getMedicationById", 404);
+        assertEquals(404, GET("/med/1"));
+    }
+
+    @Test
+    void switchTo500_returnsServerError() throws Exception {
+        wiremock.switchToError("getMedicationById", 500);
+        assertEquals(500, GET("/med/1"));
+    }
+
+    @Test
+    void afterReset_backToSuccess() throws Exception {
+        wiremock.switchToError("getMedicationById", 404);
+        assertEquals(404, GET("/med/1"));
+        wiremock.resetStubs();                // resets scenario back to "Started"
+        assertEquals(200, GET("/med/1"));
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────
 
     private static int GET(String path) throws Exception {

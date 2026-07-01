@@ -28,25 +28,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * {@link StubGenerator} implementation that parses an OpenAPI 3.0 specification and
- * generates WireMock stub mapping files.
- *
- * <h2>Stub strategy — no scenario cycling</h2>
- * <p>One stub file is written per endpoint. When multiple examples exist in the spec:
- * <ul>
- *   <li>The <b>first example</b> becomes the default {@code jsonBody} returned for
- *       any request that doesn't have a runtime override.</li>
- *   <li><b>All examples</b> (name + body) are stored in {@code metadata.examples} so
- *       that {@link WireMockAdminClient#selectExample} can directly override the
- *       response body at test time — no scenario state machine involved.</li>
- * </ul>
- *
- * <h2>Schema validation</h2>
- * <p>Each example is validated against the OpenAPI response schema before the stub is
- * written. Missing required fields or wrong types emit a {@code WARN} log so the
- * generator continues but the mismatch is visible.
- */
 public class OpenApiStubGenerator implements StubGenerator {
 
     private static final Logger log = LoggerFactory.getLogger(OpenApiStubGenerator.class);
@@ -116,59 +97,88 @@ public class OpenApiStubGenerator implements StubGenerator {
 
         String urlPattern = path.replaceAll("\\{[^}]+}", "([^/]+)");
 
-        ApiResponse successResponse = firstSuccessResponse(op);
-        if (successResponse == null) {
+        if (op.getResponses() == null || op.getResponses().isEmpty()) {
+            log.warn("No responses defined for {} {} — skipping", method, path);
+            return 0;
+        }
+
+        // Require at least one 2xx response; error-only specs are skipped
+        boolean hasSuccess = op.getResponses().keySet().stream()
+                .anyMatch(k -> k.startsWith("2") && !k.equals("default"));
+        if (!hasSuccess) {
             log.warn("No 2xx response for {} {} — skipping", method, path);
             return 0;
         }
 
-        int statusCode = successStatusCode(op);
-        Content content = successResponse.getContent();
+        int count = 0;
+        boolean firstSuccess = true;
 
-        if (content == null || !content.containsKey(APPLICATION_JSON)) {
-            writeStub(method, urlPattern, path, operationId, null, null, statusCode, out);
-            return 1;
-        }
+        for (Map.Entry<String, ApiResponse> entry : op.getResponses().entrySet()) {
+            String statusStr = entry.getKey();
+            if ("default".equals(statusStr)) continue;
 
-        MediaType mediaType = content.get(APPLICATION_JSON);
-        Schema<?> schema = mediaType.getSchema();
-        Map<String, Example> examples = mediaType.getExamples();
+            int statusCode;
+            try { statusCode = Integer.parseInt(statusStr); }
+            catch (NumberFormatException e) { continue; }
 
-        if (examples == null || examples.isEmpty()) {
-            Object inlineExample = mediaType.getExample();
-            if (schema != null && inlineExample != null) {
-                validateExample(inlineExample, schema, "default", operationId);
+            ApiResponse response = entry.getValue();
+
+            // First 2xx → default "Started" state; subsequent or error responses → state = statusCode
+            boolean isFirstSuccess = firstSuccess && statusCode >= 200 && statusCode < 300;
+            if (isFirstSuccess) firstSuccess = false;
+
+            String scenarioState = isFirstSuccess ? "Started" : statusStr;
+
+            Content content = response.getContent();
+            if (content == null || !content.containsKey(APPLICATION_JSON)) {
+                writeStub(method, urlPattern, path, operationId,
+                        null, null, statusCode, scenarioState, out);
+                count++;
+                continue;
             }
+
+            MediaType mediaType = content.get(APPLICATION_JSON);
+            Schema<?> schema   = mediaType.getSchema();
+            Map<String, Example> examples = mediaType.getExamples();
+
+            Object    defaultBody = null;
+            ArrayNode allExamples = null;   // only populated for the success stub
+
+            if (examples == null || examples.isEmpty()) {
+                defaultBody = mediaType.getExample();
+                if (schema != null && defaultBody != null) {
+                    validateExample(defaultBody, schema, "default", operationId);
+                }
+                if (isFirstSuccess) {
+                    allExamples = buildExamplesMetadata(null, null, defaultBody);
+                }
+            } else {
+                if (schema != null) {
+                    final String opId = operationId;
+                    examples.forEach((name, ex) -> validateExample(ex.getValue(), schema, name, opId));
+                }
+                Map.Entry<String, Example> first = examples.entrySet().iterator().next();
+                defaultBody = first.getValue().getValue();
+                if (isFirstSuccess) {
+                    allExamples = buildExamplesMetadata(examples, first.getKey(), null);
+                }
+            }
+
             writeStub(method, urlPattern, path, operationId,
-                    inlineExample, buildExamplesMetadata(null, null, inlineExample), statusCode, out);
-            return 1;
+                    defaultBody, allExamples, statusCode, scenarioState, out);
+            count++;
         }
 
-        // Validate every example against the schema
-        if (schema != null) {
-            final String opId = operationId;
-            examples.forEach((name, ex) ->
-                    validateExample(ex.getValue(), schema, name, opId));
-        }
-
-        // First example = default response body
-        Map.Entry<String, Example> first = examples.entrySet().iterator().next();
-        Object defaultBody = first.getValue().getValue();
-
-        // All examples embedded in metadata for selectExample()
-        ArrayNode allExamples = buildExamplesMetadata(examples, first.getKey(), null);
-
-        writeStub(method, urlPattern, path, operationId, defaultBody, allExamples, statusCode, out);
-        return 1;
+        return count;
     }
 
     /**
-     * Write a single stub file. One file per endpoint — no scenario fields.
-     * All examples stored in {@code metadata.examples} for runtime selection.
+     * Write a single stub file. All stubs for the same operationId share a WireMock scenario:
+     * the success stub uses state "Started" (default); error stubs use the HTTP status code as state.
      */
     private void writeStub(String method, String urlPattern, String originalPath,
                             String operationId, Object defaultBody,
-                            ArrayNode allExamples, int statusCode, Path out) {
+                            ArrayNode allExamples, int statusCode, String scenarioState, Path out) {
         try {
             ObjectNode stub = mapper.createObjectNode();
 
@@ -191,7 +201,13 @@ public class OpenApiStubGenerator implements StubGenerator {
 
             stub.put("priority", DEFAULT_PRIORITY);
 
-            // Metadata — examples stored here for selectExample() at test time
+            // Scenario — all stubs for same operationId share a scenario name.
+            // Success stub: state="Started" (WireMock default initial state).
+            // Error stubs:  state="{statusCode}" (e.g. "404", "500").
+            stub.put("scenarioName", operationId);
+            stub.put("requiredScenarioState", scenarioState);
+
+            // Metadata — examples stored here for selectExample() at test time (success stub only)
             ObjectNode meta = mapper.createObjectNode();
             meta.put("generatedFrom", "OpenAPI");
             meta.put("operationId", operationId);
@@ -200,13 +216,12 @@ public class OpenApiStubGenerator implements StubGenerator {
             }
             stub.set("metadata", meta);
 
-            String fileName = sanitize(operationId) + ".json";
+            // One file per status code: getMedicationById-200.json, getMedicationById-404.json, …
+            String fileName = sanitize(operationId) + "-" + statusCode + ".json";
             mapper.writerWithDefaultPrettyPrinter().writeValue(out.resolve(fileName).toFile(), stub);
-            log.info("  📄  {} (default: {}, total examples: {})",
-                    fileName,
-                    allExamples != null && allExamples.size() > 0
-                            ? allExamples.get(0).path("name").asText() : "inline",
-                    allExamples != null ? allExamples.size() : 1);
+            log.info("  📄  {} (state: {}, examples: {})",
+                    fileName, scenarioState,
+                    allExamples != null ? allExamples.size() : "-");
 
         } catch (Exception e) {
             log.error("Failed to write stub for {} {}: {}", method, urlPattern, e.getMessage(), e);
@@ -277,25 +292,6 @@ public class OpenApiStubGenerator implements StubGenerator {
             case "patch":  return item.getPatch();
             default:       return null;
         }
-    }
-
-    private ApiResponse firstSuccessResponse(Operation op) {
-        if (op.getResponses() == null) return null;
-        for (String code : new String[]{"200", "201", "202", "204"}) {
-            ApiResponse r = op.getResponses().get(code);
-            if (r != null) return r;
-        }
-        return op.getResponses().entrySet().stream()
-                .filter(e -> e.getKey().startsWith("2"))
-                .map(Map.Entry::getValue).findFirst().orElse(null);
-    }
-
-    private int successStatusCode(Operation op) {
-        if (op.getResponses() == null) return 200;
-        for (String code : new String[]{"200", "201", "202", "204"}) {
-            if (op.getResponses().containsKey(code)) return Integer.parseInt(code);
-        }
-        return 200;
     }
 
     private String sanitize(String name) {

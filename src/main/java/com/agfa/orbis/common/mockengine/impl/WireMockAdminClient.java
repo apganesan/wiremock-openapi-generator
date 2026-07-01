@@ -148,7 +148,16 @@ public class WireMockAdminClient implements StubClient {
     public void reset() throws IOException {
         LOG.info("Resetting stubs to generated state …");
         httpPost(adminUrl + "/mappings/reset", "");
+        httpPost(adminUrl + "/scenarios/reset", "");   // back to "Started" state
         LOG.info("  ✅  Stubs reset.");
+    }
+
+    @Override
+    public void switchScenarioState(String scenarioName, String state) throws IOException {
+        LOG.info("switchScenarioState {} → {}", scenarioName, state);
+        String body = "{\"state\":\"" + state + "\"}";
+        httpPut(adminUrl + "/scenarios/" + scenarioName + "/state", body);
+        LOG.info("  ✅  Scenario '{}' switched to '{}'.", scenarioName, state);
     }
 
     // ── private helpers ────────────────────────────────────────────────────────
@@ -256,6 +265,16 @@ public class WireMockAdminClient implements StubClient {
 
     private String httpPost(String url, String body) throws IOException {
         HttpURLConnection conn = openConnection(url, "POST");
+        conn.setDoOutput(true);
+        conn.setRequestProperty("Content-Type", JSON_CONTENT_TYPE);
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(body.getBytes(StandardCharsets.UTF_8));
+        }
+        return readResponse(conn);
+    }
+
+    private String httpPut(String url, String body) throws IOException {
+        HttpURLConnection conn = openConnection(url, "PUT");
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", JSON_CONTENT_TYPE);
         try (OutputStream os = conn.getOutputStream()) {
