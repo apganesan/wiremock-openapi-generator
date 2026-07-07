@@ -83,9 +83,18 @@ public class WireMockAdminClient implements StubClient {
         LOG.info("applyConditionalOverride {} {} — status={}, matchers={}",
                 method, urlPattern, status, jsonPathMatchers);
 
-        ObjectNode body = (rawBody != null)
-                ? (ObjectNode) mapper.valueToTree(rawBody)
-                : resolveBaseBody(method, urlPattern, exampleIndex);
+        ObjectNode body;
+        if (rawBody != null) {
+            // Explicit body wins.
+            body = (ObjectNode) mapper.valueToTree(rawBody);
+        } else if (exampleIndex != null) {
+            // Caller selected a specific success example.
+            body = resolveBaseBody(method, urlPattern, exampleIndex);
+        } else {
+            // No body, no example → serve the spec's generated example body for this
+            // status code (e.g. the 500 error body). Patches are applied on top.
+            body = resolveBodyForStatus(method, urlPattern, status);
+        }
 
         for (Map.Entry<String, Object> e : patches.entrySet()) {
             setAtPath(body, e.getKey(), e.getValue());
@@ -133,6 +142,31 @@ public class WireMockAdminClient implements StubClient {
         }
         LOG.info("  Base: currently active stub (priority={})", active.path("priority").asInt());
         return (ObjectNode) mapper.readTree(jsonBody.toString());
+    }
+
+    /**
+     * Resolve the base response body from the spec-generated stub that matches the given
+     * HTTP status code (e.g. the generated 500 error stub's body). Falls back to the
+     * currently active stub's body when no generated stub declares that status.
+     */
+    private ObjectNode resolveBodyForStatus(String method, String urlPattern, int status) throws IOException {
+        JsonNode all = mapper.readTree(httpGet(adminUrl + "/mappings"));
+        for (JsonNode m : all.path("mappings")) {
+            if (!matchesRequest(m, method, urlPattern)) continue;
+            // Only consider spec-generated stubs, never prior runtime overrides.
+            if (m.path("metadata").path("generatedFrom").asText("").isEmpty()) continue;
+            if (m.path("response").path("status").asInt() != status) continue;
+
+            JsonNode body = m.path("response").path("jsonBody");
+            if (body.isMissingNode() || body.isNull() || !body.isObject()) {
+                LOG.info("  Base: generated stub for status {} has no object body — using empty body", status);
+                return mapper.createObjectNode();
+            }
+            LOG.info("  Base: generated stub for status {}", status);
+            return (ObjectNode) mapper.readTree(body.toString());
+        }
+        LOG.info("  No generated stub for status {} — falling back to active stub", status);
+        return resolveBaseBody(method, urlPattern, null);
     }
 
     // ── array operations ───────────────────────────────────────────────────────

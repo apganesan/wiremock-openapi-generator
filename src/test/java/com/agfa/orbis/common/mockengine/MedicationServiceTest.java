@@ -14,7 +14,6 @@ import java.net.URL;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -117,11 +116,10 @@ class MedicationServiceTest {
                 .respondStatus(201)
                 .apply();
 
-        // Payload with name="Poison" → 500
+        // Payload with name="Poison" → 500 (spec's 500 body served automatically)
         wiremock.forStub("POST", "/med")
                 .whenFieldEquals("name", "Poison")
                 .respondStatus(500)
-                .withResponseBody(Map.of("code", 500, "message", "Cannot create medication"))
                 .apply();
 
         assertEquals(201, POST("/med", "{\"name\":\"Ibuprofen\",\"type\":\"analgesic\"}"));
@@ -129,6 +127,40 @@ class MedicationServiceTest {
         assertTrue(created.contains("\"name\":\"Ibuprofen\""));     // from default example
         assertTrue(created.contains("\"linkType\":\"FORMULARY\"")); // nested default value
         assertEquals(500, POST("/med", "{\"name\":\"Poison\"}"));
+    }
+
+    // ── 7. Status-driven body: spec's example served by default, patch one field ──
+
+    @Test
+    @Order(6)
+    void post500_usesSpecBodyByDefault() throws Exception {
+        // No explicit body / example: selecting status 500 auto-serves the spec's 500 example
+        wiremock.forStub("POST", "/med")
+                .whenFieldEquals("name", "Poison")
+                .respondStatus(500)
+                .apply();
+
+        assertEquals(500, POST("/med", "{\"name\":\"Poison\"}"));
+        String body = POST_BODY("/med", "{\"name\":\"Poison\"}");
+        assertTrue(body.contains("\"code\":500"));                              // from spec's 500 example
+        assertTrue(body.contains("Failed to persist medication record"));      // spec's default message
+    }
+
+    @Test
+    @Order(7)
+    void post500_patchMessageKeepsSpecBody() throws Exception {
+        // Base = spec's 500 example; only the message field is overridden
+        wiremock.forStub("POST", "/med")
+                .whenFieldEquals("name", "Poison")
+                .respondStatus(500)
+                .with("message", "Cannot create medication")
+                .apply();
+
+        assertEquals(500, POST("/med", "{\"name\":\"Poison\"}"));
+        String body = POST_BODY("/med", "{\"name\":\"Poison\"}");
+        assertTrue(body.contains("\"code\":500"));                             // untouched, from spec
+        assertTrue(body.contains("\"message\":\"Cannot create medication\"")); // patched
+        assertFalse(body.contains("Failed to persist medication record"));     // old message gone
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────
