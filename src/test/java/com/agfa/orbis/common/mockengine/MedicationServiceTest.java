@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -70,13 +72,18 @@ class MedicationServiceTest {
 
     @Test
     void selectExampleThenPatch() throws Exception {
-        // Switch to 3rd example (metformin) and override only status
+        // Switch to 3rd example (metformin) and override name and type
         wiremock.forStub("GET", "/med/([^/]+)")
                 .example(2)
-                .with("status", "recalled")
+               /* .with("name", "Ibuprofen")
+                .with("type", "analgesic")*/
                 .apply();
-        // Response: metformin body with status="recalled"; all other fields from metformin example
-        assertEquals(200, GET("/med/1"));
+        // Response: metformin body with name="Ibuprofen" and type="analgesic"; all other fields from metformin example
+        //                    name: Metformin
+        //                    type: antidiabetic
+        String body = GET_BODY("/med/1");
+        assertTrue(body.contains("\"name\":\"Metformin\""));
+        assertTrue(body.contains("\"type\":\"antidiabetic\""));
     }
 
     // ── 5. Error scenarios ────────────────────────────────────────────────────
@@ -110,5 +117,22 @@ class MedicationServiceTest {
         conn.setConnectTimeout(5_000);
         conn.setReadTimeout(10_000);
         return conn.getResponseCode();
+    }
+
+    private static String GET_BODY(String path) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection)
+                new URL(wiremock.getBaseUrl() + path).openConnection();
+        conn.setRequestMethod("GET");
+        conn.setConnectTimeout(5_000);
+        conn.setReadTimeout(10_000);
+
+        int code = conn.getResponseCode();
+        InputStream in = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+        if (in == null) {
+            return "";
+        }
+        try (in) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 }
