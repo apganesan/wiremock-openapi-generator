@@ -3,7 +3,11 @@ package com.agfa.orbis.common.mockengine;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.TestMethodOrder;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -16,6 +20,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import static org.junit.jupiter.api.Assertions.*;
 
 
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class MedicationServiceTest {
 
     static WireMockIntegrationSupport wiremock;
@@ -43,6 +48,7 @@ class MedicationServiceTest {
     // ── 1. Normal flow — default example served as-is ─────────────────────────
 
     @Test
+    @Order(1)
     void get_returnsDefaultExample() throws Exception {
         // The stub matches the regex /med/([^/]+); the REQUEST must use a concrete id.
         // A random id proves any id resolves to the same default example.
@@ -57,6 +63,7 @@ class MedicationServiceTest {
     // ── 2. Change an existing default value ───────────────────────────────────
 
     @Test
+    @Order(2)
     void get_changeDefaultValue() throws Exception {
         // Override the default example's "type"; every other field keeps its value
         wiremock.forStub("GET", "/med/([^/]+)")
@@ -71,15 +78,37 @@ class MedicationServiceTest {
         assertTrue(body.contains("\"name\":\"Ibuprofen\""));    // untouched
     }
 
+    // ── 3. Change a nested default value ──────────────────────────────────────
+
+    @Test
+    @Order(3)
+    void get_changeNestedValue() throws Exception {
+        // Override a nested field via dot-path; every other field keeps its value
+        wiremock.forStub("GET", "/med/([^/]+)")
+                .example(0)
+                .with("linkRefDto.linkId", 302)
+                .apply();
+        // Any concrete id matches the same stub regex
+        String path = "/med/" + ThreadLocalRandom.current().nextInt(1, 10_000);
+        assertEquals(200, GET(path));
+        String body = GET_BODY(path);
+        assertTrue(body.contains("\"linkId\":302"));            // changed
+        assertFalse(body.contains("\"linkId\":101"));           // old value gone
+        assertTrue(body.contains("\"linkType\":\"FORMULARY\""));// untouched
+        assertTrue(body.contains("\"name\":\"Ibuprofen\""));    // untouched
+    }
+
     // ── 6. Payload-driven POST (one payload → 201, another → 500) ──────────────
 
     @Test
+    @Order(4)
     void postDefault_returns201() throws Exception {
         // No override — the generated createMedication stub serves its 201 example
         assertEquals(201, POST("/med", "{\"id\":42,\"name\":\"Ibuprofen\",\"type\":\"analgesic\"}"));
     }
 
     @Test
+    @Order(5)
     void postPayloadDriven_createdVsError() throws Exception {
         // Payload with name="Ibuprofen" → 201 using the spec's default example body
         wiremock.forStub("POST", "/med")
