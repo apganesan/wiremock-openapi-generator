@@ -4,7 +4,9 @@ import com.agfa.orbis.common.mockengine.api.StubClient;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public final class StubOverride {
@@ -14,6 +16,11 @@ public final class StubOverride {
     private final String            urlPattern;
     private       Integer           exampleIndex = null;   // null = use currently active stub
     private final Map<String,Object> patches     = new LinkedHashMap<>();
+
+    // Conditional (payload-driven) override state
+    private final List<String> jsonPathMatchers = new ArrayList<>();
+    private       Integer      status           = null;    // null = 200 when conditional
+    private       Object       responseBody     = null;    // explicit body (overrides example)
 
     StubOverride(StubClient client, String method, String urlPattern) {
         this.client     = client;
@@ -40,10 +47,50 @@ public final class StubOverride {
         return this;
     }
 
+    /**
+     * Only respond to requests whose JSON body matches the given WireMock
+     * {@code matchesJsonPath} expression. Multiple calls are ANDed together.
+     * Marks this override as conditional (payload-driven).
+     */
+    public StubOverride whenBodyMatches(String jsonPath) {
+        jsonPathMatchers.add(jsonPath);
+        return this;
+    }
+
+    /**
+     * Convenience matcher: respond only when the request body's {@code field}
+     * equals {@code value} (e.g. {@code whenFieldEquals("name", "Ibuprofen")}).
+     */
+    public StubOverride whenFieldEquals(String field, Object value) {
+        String literal = (value instanceof Number || value instanceof Boolean)
+                ? String.valueOf(value)
+                : "'" + value + "'";
+        return whenBodyMatches("$[?(@." + field + " == " + literal + ")]");
+    }
+
+    /** HTTP status code to return (defaults to 200 for conditional overrides). */
+    public StubOverride respondStatus(int status) {
+        this.status = status;
+        return this;
+    }
+
+    /** Explicit response body, taking precedence over any selected example. */
+    public StubOverride withResponseBody(Object body) {
+        this.responseBody = body;
+        return this;
+    }
+
     /** Commit the override in a single Admin API round-trip. */
     public void apply() {
         try {
-            client.applyOverride(method, urlPattern, exampleIndex, patches);
+            boolean conditional = !jsonPathMatchers.isEmpty() || status != null || responseBody != null;
+            if (conditional) {
+                int resolvedStatus = (status != null) ? status : 200;
+                client.applyConditionalOverride(method, urlPattern, jsonPathMatchers,
+                        exampleIndex, patches, resolvedStatus, responseBody);
+            } else {
+                client.applyOverride(method, urlPattern, exampleIndex, patches);
+            }
         } catch (IOException e) {
             throw new UncheckedIOException(
                     "Failed to apply override for " + method + " " + urlPattern, e);

@@ -13,6 +13,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -63,8 +64,48 @@ public class WireMockAdminClient implements StubClient {
                               Integer exampleIndex, Map<String, Object> patches) throws IOException {
         LOG.info("applyOverride {} {} — exampleIndex={}, patches={}", method, urlPattern, exampleIndex, patches.keySet());
 
-        ObjectNode baseBody;
+        ObjectNode baseBody = resolveBaseBody(method, urlPattern, exampleIndex);
 
+        // Apply patches (may be empty — that's fine, pure example selection)
+        for (Map.Entry<String, Object> e : patches.entrySet()) {
+            setAtPath(baseBody, e.getKey(), e.getValue());
+        }
+
+        postOverride(method, urlPattern, baseBody);
+        LOG.info("  ✅  Override applied.");
+    }
+
+    @Override
+    public void applyConditionalOverride(String method, String urlPattern,
+                                         List<String> jsonPathMatchers, Integer exampleIndex,
+                                         Map<String, Object> patches, int status,
+                                         Object rawBody) throws IOException {
+        LOG.info("applyConditionalOverride {} {} — status={}, matchers={}",
+                method, urlPattern, status, jsonPathMatchers);
+
+        ObjectNode body = (rawBody != null)
+                ? (ObjectNode) mapper.valueToTree(rawBody)
+                : resolveBaseBody(method, urlPattern, exampleIndex);
+
+        for (Map.Entry<String, Object> e : patches.entrySet()) {
+            setAtPath(body, e.getKey(), e.getValue());
+        }
+
+        ObjectNode stub = buildStub(method, urlPattern, body, status);
+        if (jsonPathMatchers != null && !jsonPathMatchers.isEmpty()) {
+            ArrayNode bodyPatterns = mapper.createArrayNode();
+            for (String jsonPath : jsonPathMatchers) {
+                bodyPatterns.add(mapper.createObjectNode().put("matchesJsonPath", jsonPath));
+            }
+            ((ObjectNode) stub.get("request")).set("bodyPatterns", bodyPatterns);
+        }
+        stub.put("priority", OVERRIDE_PRIORITY);
+        httpPost(adminUrl + "/mappings", stub.toString());
+        LOG.info("  ✅  Conditional stub registered (status={}).", status);
+    }
+
+    /** Resolve the base response body from a spec example or the currently active stub. */
+    private ObjectNode resolveBaseBody(String method, String urlPattern, Integer exampleIndex) throws IOException {
         if (exampleIndex != null) {
             // Read from the generated stub's metadata.examples (never the active override)
             JsonNode generated = findGeneratedStub(method, urlPattern);
@@ -79,28 +120,19 @@ public class WireMockAdminClient implements StubClient {
             JsonNode exBody = examples.get(exampleIndex).path("body");
             String   name   = examples.get(exampleIndex).path("name").asText();
             LOG.info("  Base: example[{}] '{}'", exampleIndex, name);
-            baseBody = (ObjectNode) mapper.readTree(exBody.toString());
-        } else {
-            // Patch on top of whatever WireMock is currently serving
-            JsonNode active = findActiveStub(method, urlPattern);
-            if (active == null) {
-                throw new IllegalStateException("No stub found for " + method + " " + urlPattern);
-            }
-            JsonNode jsonBody = active.path("response").path("jsonBody");
-            if (jsonBody.isMissingNode()) {
-                throw new IllegalStateException("Active stub has no jsonBody for " + method + " " + urlPattern);
-            }
-            LOG.info("  Base: currently active stub (priority={})", active.path("priority").asInt());
-            baseBody = (ObjectNode) mapper.readTree(jsonBody.toString());
+            return (ObjectNode) mapper.readTree(exBody.toString());
         }
-
-        // Apply patches (may be empty — that's fine, pure example selection)
-        for (Map.Entry<String, Object> e : patches.entrySet()) {
-            setAtPath(baseBody, e.getKey(), e.getValue());
+        // Patch on top of whatever WireMock is currently serving
+        JsonNode active = findActiveStub(method, urlPattern);
+        if (active == null) {
+            throw new IllegalStateException("No stub found for " + method + " " + urlPattern);
         }
-
-        postOverride(method, urlPattern, baseBody);
-        LOG.info("  ✅  Override applied.");
+        JsonNode jsonBody = active.path("response").path("jsonBody");
+        if (jsonBody.isMissingNode()) {
+            throw new IllegalStateException("Active stub has no jsonBody for " + method + " " + urlPattern);
+        }
+        LOG.info("  Base: currently active stub (priority={})", active.path("priority").asInt());
+        return (ObjectNode) mapper.readTree(jsonBody.toString());
     }
 
     // ── array operations ───────────────────────────────────────────────────────

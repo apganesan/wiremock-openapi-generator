@@ -6,13 +6,13 @@ info:
     endpoints
   version: 1.0-SNAPSHOT
 tags:
-- name: Medication
-  description: Operations for managing medication records in the target system
+  - name: Medication
+    description: Operations for managing medication records in the target system
 paths:
   /med:
     post:
       tags:
-      - Medication
+        - Medication
       summary: Create a medication record
       description: Accepts a MedRequest payload and persists a new medication record
         in the target system. Returns the created MedResponse with the assigned identifier.
@@ -32,41 +32,25 @@ paths:
                   type: analgesic
         required: true
       responses:
-        "200":
+        "201":
           description: Medication successfully created
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MedResponseDto"
               examples:
-                ibuprofen:
-                  summary: Analgesic medication created
+                default:
+                  summary: Default medication response
                   value:
                     id: 1
                     name: Ibuprofen
                     type: analgesic
+                    linkRefDto:
+                      medId: 1
+                      linkId: 101
+                      linkType: FORMULARY
                     properties:
                       dosage: 200mg
-                      route: oral
-                      frequency: twice daily
-                amoxicillin:
-                  summary: Antibiotic medication created
-                  value:
-                    id: 2
-                    name: Amoxicillin
-                    type: antibiotic
-                    properties:
-                      dosage: 500mg
-                      route: oral
-                      frequency: three times daily
-                metformin:
-                  summary: Antidiabetic medication created
-                  value:
-                    id: 3
-                    name: Metformin
-                    type: antidiabetic
-                    properties:
-                      dosage: 850mg
                       route: oral
                       frequency: twice daily
         "400":
@@ -92,31 +76,32 @@ paths:
                   summary: Default 500 error
                   value:
                     code: 500
-                    message: An unexpected error occurred
+                    message: "Failed to persist medication record for id=42, name=Ibuprofen,\
+                      \ type=analgesic"
   /med/{id}:
     get:
       tags:
-      - Medication
+        - Medication
       summary: Fetch a medication record by ID
       description: Retrieves a single medication record identified by its numeric
         ID. An optional 'type' query parameter can be used to filter or validate the
         result by medication category.
       operationId: getMedicationById
       parameters:
-      - name: id
-        in: path
-        description: Numeric identifier of the medication record
-        required: true
-        schema:
-          type: integer
-        example: 1
-      - name: type
-        in: query
-        description: Optional medication type filter
-        required: false
-        schema:
-          type: string
-        example: analgesic
+        - name: id
+          in: path
+          description: Numeric identifier of the medication record
+          required: true
+          schema:
+            type: integer
+          example: 1
+        - name: type
+          in: query
+          description: Optional medication type filter
+          required: false
+          schema:
+            type: string
+          example: analgesic
       responses:
         "200":
           description: Medication record found
@@ -125,34 +110,18 @@ paths:
               schema:
                 $ref: "#/components/schemas/MedResponseDto"
               examples:
-                ibuprofen:
-                  summary: Analgesic medication record
+                default:
+                  summary: Default medication response
                   value:
                     id: 1
                     name: Ibuprofen
                     type: analgesic
+                    linkRefDto:
+                      medId: 1
+                      linkId: 101
+                      linkType: FORMULARY
                     properties:
                       dosage: 200mg
-                      route: oral
-                      frequency: twice daily
-                amoxicillin:
-                  summary: Antibiotic medication record
-                  value:
-                    id: 2
-                    name: Amoxicillin
-                    type: antibiotic
-                    properties:
-                      dosage: 500mg
-                      route: oral
-                      frequency: three times daily
-                metformin:
-                  summary: Antidiabetic medication record
-                  value:
-                    id: 3
-                    name: Metformin
-                    type: antidiabetic
-                    properties:
-                      dosage: 850mg
                       route: oral
                       frequency: twice daily
         "404":
@@ -194,6 +163,17 @@ components:
           description: Human-readable description of the error
           type: string
           example: The request payload is missing required fields
+    MedLinkRefDto:
+      type: object
+      properties:
+        medId:
+          format: int32
+          type: integer
+        linkId:
+          format: int32
+          type: integer
+        linkType:
+          type: string
     MedRequestDto:
       type: object
       properties:
@@ -214,6 +194,8 @@ components:
           type: string
         type:
           type: string
+        linkRefDto:
+          $ref: "#/components/schemas/MedLinkRefDto"
         properties:
           type: object
           additionalProperties:
